@@ -8,6 +8,8 @@ silently trusting damaged artifacts. SQLite is used transactionally.
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
+from typing import Iterator
 import sqlite3
 import uuid
 from pathlib import Path
@@ -67,12 +69,20 @@ class JobJournal:
                 );
             """)
 
-    def _open(self) -> sqlite3.Connection:
+    @contextmanager
+    def _open(self) -> Iterator[sqlite3.Connection]:
         db = sqlite3.connect(self.database, timeout=30)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA foreign_keys=ON")
-        db.execute("PRAGMA busy_timeout=30000")
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA foreign_keys=ON")
+            db.execute("PRAGMA busy_timeout=30000")
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def create_job(self, source: str | Path, output: str | Path, page_count: int) -> str:
         """Pin source digest. Never overwrite the input or an existing output."""
