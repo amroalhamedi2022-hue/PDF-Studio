@@ -57,3 +57,12 @@ Implement page ranges, metadata browser, safe file IO, and parser-isolation limi
 **Acceptance tests added:** subprocess timeout must fail closed; invalid resource limits must be rejected; excessive page counts must fail without source modification; valid encrypted PDF unlock must preserve metadata. These supplement existing blank/text/malformed/metadata inspection tests. New code is in the existing B01 branch/PR #2, not main.
 
 **Verification status:** source changes committed; CI results for the newest SHA must be checked before declaring PASS. Linux/macOS resource containment is **not** a complete security sandbox. Windows Job Objects, Android native integration, page-tools isolation, 1000+/5000-page benchmarks, real OCR, and final platform builds remain **NOT TESTED**. No APK/EXE built in this source-only milestone.
+
+
+## B01 same milestone — isolated page extraction/merge (2026-10-24)
+
+**Production scope:** `page_tools.extract_pages` and `merge_pdfs` now dispatch pypdf parsing and writing to a fresh spawned POSIX child through `page_isolation.py`. Worker applies RLIMIT_AS, RLIMIT_CPU, RLIMIT_FSIZE (1 GiB), wall-clock deadline and total-page cap; input SHA-256 is pinned before dispatch and rechecked before publishing. The existing atomic no-clobber hard-link output and signature/encryption refusal remain. Public methods keep their existing positional arguments and expose optional per-job limits. Windows **fails closed**, not silently unbounded.
+
+**Acceptance:** real synthetic extraction/merge preserve input bytes and order; total-page caps and timeouts reject safely; existing destination is never overwritten; bad limits fail early; existing page range, signature and encryption tests must remain PASS. Added seven regression tests in `tests/test_page_isolation.py`. CI outcome must be recorded separately; source code presence alone is not a PASS.
+
+**Residual risks:** child is **not** a full filesystem/syscall sandbox; an external process can race output publication or source mutation; an abrupt crash after publication but before worker acknowledgement can leave a valid newly created output even if the parent reports failure. Parent verifies hashes after return but cannot automatically remove a possibly user-owned output safely. RLIMIT_FSIZE is a per-file cap, not a total temporary-storage quota. Windows Job Objects and native Android PDF backend remain NOT TESTED. The milestone stays OPEN until security/platform gates and 1000+/5000-page benchmarks pass. No APK/EXE built for this source-only change.
