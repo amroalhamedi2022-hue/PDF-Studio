@@ -21,7 +21,7 @@ class LibraryIndexTests(unittest.TestCase):
         self.write_pdf("Hello World PDF Studio")
         self.index = LibraryIndex(self.db)
 
-    def write_pdf(self, content, encrypted=False):
+    def write_pdf(self, content, encrypted=False, page_count=1):
         writer = PdfWriter()
         page = writer.add_blank_page(width=612, height=792)
         font = DictionaryObject({NameObject('/Type'): NameObject('/Font'),
@@ -32,6 +32,8 @@ class LibraryIndexTests(unittest.TestCase):
         stream = DecodedStreamObject()
         stream.set_data(f'BT /F1 12 Tf 40 700 Td ({content}) Tj ET'.encode('ascii'))
         page[NameObject('/Contents')] = writer._add_object(stream)
+        for _ in range(page_count - 1):
+            writer.add_blank_page(width=612, height=792)
         if encrypted:
             writer.encrypt('secret')
         with self.pdf.open('wb') as fh:
@@ -122,12 +124,18 @@ class LibraryIndexTests(unittest.TestCase):
         self.assertTrue(all(h.page_number == 1 for h in hits))
 
     def test_partial_ocr_pages_and_rejected_update_preserve_previous_index(self):
+        self.write_pdf('Hello World PDF Studio', page_count=3)
         self.index.index_ocr_text(self.pdf, 3, [(1, 'middle only')], expected_sha256=sha256_file(self.pdf))
         self.assertEqual(self.index.search('middle')[0].page_number, 2)
         with self.assertRaises(LibraryIndexError):
             self.index.index_ocr_text(self.pdf, 3, [(3, 'outside')], expected_sha256=sha256_file(self.pdf))
         self.assertEqual(len(self.index.search('middle')), 1)
         self.index.integrity_check()
+
+    def test_ocr_page_count_mismatch_rejected(self):
+        with self.assertRaises(LibraryIndexError):
+            self.index.index_ocr_text(self.pdf, 4, [(0, 'not real')], expected_sha256=sha256_file(self.pdf))
+        self.assertEqual(self.index.search('real'), [])
 
     def test_remove_clears_fts_and_keeps_original(self):
         original = self.pdf.read_bytes()
