@@ -1,0 +1,68 @@
+# PDF Studio — Acceptance Matrix v1
+
+Source of truth: [approved master plan](PDF_Studio_Master_Execution_Plan_v1.md). Status is TODO until a tested implementation has documented results. **B00 checkpoint primitives are NOT full F04.03 acceptance.**
+
+Statuses: TODO, IN PROGRESS, PASS, FAIL, BLOCKED, NOT TESTED. A PASS requires test evidence/commit, not a static UI or mock. No feature may disappear from this list without owner-approved scope change.
+
+| ID | Locked requirement | Batch | Status | Verification |
+|---|---|---|---|---|
+| F01.01 | Open PDF and images; inspect metadata, page dimensions, text layer, scanned/hybrid pages, encryption, signatures, corruption, password handling. | B01 | TODO | NOT TESTED |
+| F01.02 | Render/pan/zoom/navigate/thumbnails/page jump/bookmarks/outlines; full-text search within and across files, selection, copy and highlight. | B01 | TODO | NOT TESTED |
+| F01.03 | Local PDF library, folders, tags, recent files, full-text indexing, incremental reindexing, filter/search, duplicate detection; export/import library index. | B01 | TODO | NOT TESTED |
+| F01.04 | Android SAF folder and file access, Windows drag/drop/context actions, keyboard shortcuts, autosave recovery. | B01 | TODO | NOT TESTED |
+| F02.01 | Arabic, English and mixed Arabic/English with RTL, diacritics-aware and hamza-normalized searchable index; extend with installed model packs. | B02 | TODO | NOT TESTED |
+| F02.02 | Text overlay respecting word-level bounding boxes, orientation and reading order; preserve original page appearance in searchable mode. | B02 | TODO | NOT TESTED |
+| F02.03 | Modes: only images/no current text, skip existing text, redo existing OCR, deliberately force OCR with destructive-rasterization warning. | B02 | TODO | NOT TESTED |
+| F02.04 | Page selection, range, all pages, batch/folder jobs, language auto-detection (confidence shown), manual language override, DPI/model/quality profiles. | B02 | TODO | NOT TESTED |
+| F02.05 | Text viewer, select/copy, full-text export, page-to-text links, OCR error correction and rerun only selected blocks/pages. | B02 | TODO | NOT TESTED |
+| F03.01 | Orientation detection/rotation, deskew, perspective correction, page boundaries/crop, dewarp/curvature for books, split facing pages. | B02 | TODO | NOT TESTED |
+| F03.02 | Denoise/despeckle, shadow/background cleanup, contrast/binarization, adaptive grayscale, blur assessment, blank-page detection. | B02 | TODO | NOT TESTED |
+| F03.03 | Before/after compare and preview, reversible recipe, preview vs export profile; never destructively modify original without explicit save-as. | B02 | TODO | NOT TESTED |
+| F04.01 | Preflight: page count, estimated memory/disk, type, signatures/encryption, unsupported content, free space. | B03 | TODO | NOT TESTED |
+| F04.02 | Disk-backed batches + bounded workers + resource caps for CPU/RAM/GPU and temporary disk; configurable page batch size. | B03 | TODO | NOT TESTED |
+| F04.03 | Checkpoint per page/block and pipeline stage; pause/cancel/resume after crash/reboot; idempotent stages and fingerprint checks for changed inputs. | B03 | TODO | NOT TESTED |
+| F04.04 | Retry only failed pages; isolated recovery; progress pages/jobs/ETA (qualified estimate); actionable error log. | B03 | TODO | NOT TESTED |
+| F04.05 | Streaming assembly, atomic final export, preserve page order, verify counts and text layer, hash original and output; restore/cleanup temp cache safely. | B03 | TODO | NOT TESTED |
+| F04.06 | Test corpus: 10/100/1000/5000 pages, realistic file sizes including >=2 GB where hardware/storage permits; no artificial file/page hard limits, document legitimate resource constra | B03 | TODO | NOT TESTED |
+| F05.01 | Multi-column layout, reading order, paragraphs, headings, list structure, footnotes, header/footer, page numbers, table of contents/bookmarks recovery. | B04 | TODO | NOT TESTED |
+| F05.02 | Table detection, multi-page tables, row/col/cell reconstruction; export CSV/XLSX; cell review UI. | B04 | TODO | NOT TESTED |
+| F05.03 | Printed/math formula detection and LaTeX export; equation/block alignment review. | B04 | TODO | NOT TESTED |
+| F05.04 | Images/figures/charts/diagram and caption recovery; chart structure extraction on supported cases, never invent unseen values. | B04 | TODO | NOT TESTED |
+| F05.05 | Handwritten notes and degraded/old paper as best-effort specialized mode with visible confidence/limitations. | B04 | TODO | NOT TESTED |
+| F05.06 | OCR confidence heatmap, alternative engine compare, suggested corrections with side-by-side original crop, audit history. | B04 | TODO | NOT TESTED |
+| F06.01 | Text editing for born-digital content *where supported*, safe insertion/cover-and-replace mode where direct glyph editing isn't possible, with limitations disclosed. | B05–B06 | TODO | NOT TESTED |
+| F06.02 | New text/boxes/fonts/style/positioning; image add/replace/delete/crop; hyperlinks; page background/watermarks/stamps. | B05–B06 | TODO | NOT TESTED |
+| F06.03 | Highlight/underline/strikeout/freehand/draw/shapes/notes/comments/sticky notes; annotation management. | B05–B06 | TODO | NOT TESTED |
+| F06.04 | Form fill / basic form creation and compatible export; digital signature creation/verification subject to security/library capabilities. | B05–B06 | TODO | NOT TESTED |
+| F06.05 | Undo/redo, change history, autosave snapshots, edit confirmation, compare version vs original; backups. | B05–B06 | TODO | NOT TESTED |
+| F06.06 | True redaction removal including hidden text, attachments/metadata and validation; NOT merely black painted rectangles. | B05–B06 | TODO | NOT TESTED |
+| F07.01 | **Preserve mode**: original visual page + invisible selectable text layer. | B02/B07 | TODO | NOT TESTED |
+| F07.02 | **Hybrid Edit mode**: select OCR region, edit recognized text, locally repaint/reconstruct text region with appropriate fonts/background; visual diff and manual confirmation. | B02/B07 | TODO | NOT TESTED |
+| F07.03 | **Full Rebuild mode**: rebuild pages from layout blocks, real text, images/tables/formulas, RTL typography and font substitutions. | B02/B07 | TODO | NOT TESTED |
+| F07.04 | Export reconstructed content to editable DOCX and to rebuilt PDF, with structured Markdown/HTML/JSON and source-region/page traceability. | B02/B07 | TODO | NOT TESTED |
+| F07.05 | Side-by-side compare, geometry drift/overlap detection, missing-element detection, manual adjustment, flag low-confidence complex pages. No promise of perfect pixel match. | B02/B07 | TODO | NOT TESTED |
+| F08.01 | Merge, split by pages/ranges/size/bookmarks, extract and reorder, delete, duplicate, insert, rotate, crop, resize, blank page removal, page numbering. | B01/B05 | TODO | NOT TESTED |
+| F08.02 | Compress images/streams, optimize size, presets visual-quality vs size, preserve vector modes, linearize/fast web view where supported. | B01/B05 | TODO | NOT TESTED |
+| F08.03 | Convert PDF↔image where appropriate; images to PDF, PDF to PDF/A, DOCX, TXT, Markdown, HTML, JSON, CSV, XLSX for extracted tables, selected page extraction; clearly label lossy con | B01/B05 | TODO | NOT TESTED |
+| F08.04 | Password open/encryption with legitimate authorization, permission inspection, document info/metadata management, attachment management, signature safety warnings. | B01/B05 | TODO | NOT TESTED |
+| F08.05 | PDF structural validation and repair for recoverable corrupt PDFs; report irrecoverable cases with no silent content loss. | B01/B05 | TODO | NOT TESTED |
+| F09.01 | Multi-file queues; folder scan and watch (platform-permitted), smart rename using document text, profiles/presets and saved workflows. | B03/B08 | TODO | NOT TESTED |
+| F09.02 | Workflow operations with conditionals (scanned? text? language? size?) and previews, dry-run, queue schedule on Windows, re-run failed jobs. | B03/B08 | TODO | NOT TESTED |
+| F09.03 | Export/share via Android Share Sheet/SAF and Windows explorer; offline transfer to Windows processing host via mutually authenticated LAN pairing, optional and user-initiated. | B03/B08 | TODO | NOT TESTED |
+| F09.04 | Opt-in cloud AI/API adapters only after security/data-processing design and separate owner approval. Default no network processing. | B03/B08 | TODO | NOT TESTED |
+| F10.01 | Privacy by default, permission minimization, no analytics or automatic upload of document text/content. | B08–B10 | TODO | NOT TESTED |
+| F10.02 | Encrypted temp storage for sensitive workloads where feasible, safe disposal, log redaction, no personal content in telemetry/reports; sandbox untrusted PDFs and enforce resource l | B08–B10 | TODO | NOT TESTED |
+| F10.03 | Password handling, signature-preservation warnings, PDF injection/active content sanitization, license and dependency vulnerability scanning. | B08–B10 | TODO | NOT TESTED |
+| F10.04 | Keyboard and stylus support, accessibility labels, touch targets, RTL/LTR layout, light/dark/system settings, visible battery/memory impact. | B08–B10 | TODO | NOT TESTED |
+| F10.05 | Crash recovery, backup/restore settings/jobs, deterministic export naming and overwrite confirmation. | B08–B10 | TODO | NOT TESTED |
+
+## Batch B00 checkpoint (separate from user-facing features)
+
+- [x] Repository initialization and approved plan committed on feature branch.
+- [x] Initial SQLite journal, SHA verification and Arabic index normalization unit-tested locally (8 tests). These are scaffolding and do NOT make OCR or PDF editing work.
+- [ ] GitHub Actions evidence reviewed (CI execution/status needed).
+- [ ] Owner review / architecture sign-off and required icon derivatives.
+
+## Test coverage contract
+
+Every Fxx.yy must have at least one reproducible automated check or honest manual acceptance protocol with real evidence. NOT TESTED cannot be converted to PASS on code presence alone.

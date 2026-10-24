@@ -1,0 +1,32 @@
+name: Source checks only (NO APP PACKAGING)
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-core:
+    name: Python source tests, no binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check Python syntax
+        run: python -m compileall -q engine tests
+      - name: Run isolated source-only tests
+        env:
+          PYTHONPATH: engine
+        run: python -m unittest discover -s tests -v
+
