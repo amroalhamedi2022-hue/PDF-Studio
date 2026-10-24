@@ -7,6 +7,9 @@
 
 > Scope lock: all items in this document are required unless the owner explicitly approves a documented change. Do not claim an item done based on UI, mock data, or code presence alone. No external cloud transmission without explicit consent. No APK/EXE builds during normal development: complete source features, unit/integration tests that don't package apps, static analysis, security, and release readiness first; package final app once per platform at the end and verify it on devices.
 
+
+> **2026-10-24 automation governance override (user approved):** PDF Studio is now included in the **existing scheduled AquaWord + PDF Studio development task**, not a standalone sixth task. This explicit user decision supersedes only the earlier line in Execution Principles saying “One project-specific automation only; never alter existing AquaWord automation.” The apps and code remain completely separate, with distinct GitHub repositories, branches, PRs, CI, test logs, security reviews and delivery artifacts. Both retain the same free-only, no-auto-merge, source-first, **no APK/EXE builds until all features and source checks are completed**, final device recheck and individually verified handoff rules. Do not combine modules or reuse binaries across the two projects. Neither project's completion should block delivery of the other's verified final files. No functional F01-F10 requirements or B00-B11 gates are waived.
+
 ## 0. Execution principles (binding)
 - Search authoritative open-source alternatives *before* implementing or modifying any feature. Evaluate technical quality, maintenance, license of code + model weights, CVEs, dependencies, and Android/Windows viability; record decision as ADR. Adapt proven implementations legally; never blindly copy.
 - GitHub is authoritative: `main` protected by convention; work on `feature/*` branches and PRs, no auto-merge, no unapproved rewrite of history, no changes in other project repos, especially AquaWord.
