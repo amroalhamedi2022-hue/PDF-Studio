@@ -3,9 +3,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from pypdf import PdfReader, PdfWriter
 from pdfstudio.page_tools import PageToolError, extract_pages, merge_pdfs
+from pdfstudio.jobs import sha256_file
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX RLIMIT worker required")
@@ -52,12 +54,57 @@ class IsolatedPageToolTests(unittest.TestCase):
             extract_pages(self.a, self.out, [0], timeout_seconds=0.000001)
         self.assertEqual(self.a.read_bytes(), before)
         self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
     def test_existing_output_never_replaced(self):
         self.out.write_bytes(b"private-output")
         with self.assertRaises(FileExistsError):
             merge_pdfs([self.a, self.b], self.out)
         self.assertEqual(self.out.read_bytes(), b"private-output")
+
+    def test_only_parent_publishes_after_staging(self):
+        real_link = os.link
+        observed = []
+
+        def check_publication(staged, destination):
+            self.assertEqual(Path(destination), self.out)
+            self.assertEqual(Path(staged).name, "result.pdf")
+            self.assertTrue(Path(staged).parent.name.startswith(".pdfstudio-stage-"))
+            self.assertTrue(Path(staged).is_file())
+            self.assertFalse(self.out.exists())
+            observed.append(True)
+            return real_link(staged, destination)
+
+        with mock.patch("pdfstudio.page_isolation.os.link", side_effect=check_publication):
+            extract_pages(self.a, self.out, "1")
+        self.assertEqual(observed, [True])
+        self.assertTrue(self.out.is_file())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
+    def test_failed_parent_publication_leaves_no_output_or_staging(self):
+        with mock.patch("pdfstudio.page_isolation.os.link",
+                        side_effect=PermissionError("publication disallowed")):
+            with self.assertRaises(PermissionError):
+                extract_pages(self.a, self.out, "1")
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
+    def test_source_changed_after_worker_success_never_publishes(self):
+        before = self.a.read_bytes()
+        calls = 0
+
+        def altered_digest(path):
+            nonlocal calls
+            calls += 1
+            return sha256_file(path) if calls == 1 else "0" * 64
+
+        with mock.patch("pdfstudio.page_isolation.sha256_file", side_effect=altered_digest):
+            with self.assertRaises(PageToolError):
+                extract_pages(self.a, self.out, "1")
+        self.assertGreaterEqual(calls, 2)
+        self.assertEqual(self.a.read_bytes(), before)
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
     def test_invalid_limits_rejected(self):
         for settings in ({"max_pages": 0}, {"max_memory_mb": True},
