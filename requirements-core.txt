@@ -1,0 +1,2 @@
+# PDF Studio B01: read-only Windows/host PDF inspection (BSD-3-Clause upstream)
+pypdf==6.21.2
