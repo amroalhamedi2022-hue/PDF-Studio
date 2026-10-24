@@ -1,5 +1,6 @@
 """Use synthetically generated valid PDFs; no user's scanned documents."""
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -72,6 +73,36 @@ class InspectionTests(unittest.TestCase):
             inspect_pdf(self.path, sample_limit=33)
         self.assertEqual(inspect_pdf(self.path, sample_limit=0).sampled_pages, ())
         self.assertEqual(len(inspect_pdf(self.path, sample_limit=1).sampled_pages), 1)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX worker limits required")
+    def test_isolated_timeout_fails_closed_and_preserves_input(self):
+        self.write_pdf(with_text=True)
+        original = self.path.read_bytes()
+        with self.assertRaises(DocumentInspectionError):
+            inspect_pdf(self.path, timeout_seconds=0.000001)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_invalid_isolation_limits_fail_before_parsing(self):
+        self.write_pdf()
+        for kwargs in ({"max_memory_mb": 0}, {"max_pages": 0},
+                       {"timeout_seconds": float("nan")}, {"timeout_seconds": 0}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                inspect_pdf(self.path, **kwargs)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX worker limits required")
+    def test_page_count_limit_and_original_integrity(self):
+        self.write_pdf()
+        before = self.path.read_bytes()
+        with self.assertRaises(DocumentInspectionError):
+            inspect_pdf(self.path, max_pages=1)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX worker limits required")
+    def test_isolated_metadata_and_password_never_logged(self):
+        self.write_pdf(password="private-test-password")
+        info = inspect_pdf(self.path, password="private-test-password")
+        self.assertEqual(info.page_count, 2)
+        self.assertEqual(info.title, "Synthetic QA")
 
 
 if __name__ == '__main__':
