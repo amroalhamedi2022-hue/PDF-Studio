@@ -66,3 +66,16 @@ Implement page ranges, metadata browser, safe file IO, and parser-isolation limi
 **Acceptance:** real synthetic extraction/merge preserve input bytes and order; total-page caps and timeouts reject safely; existing destination is never overwritten; bad limits fail early; existing page range, signature and encryption tests must remain PASS. Added seven regression tests in `tests/test_page_isolation.py`. CI outcome must be recorded separately; source code presence alone is not a PASS.
 
 **Residual risks:** child is **not** a full filesystem/syscall sandbox; an external process can race output publication or source mutation; an abrupt crash after publication but before worker acknowledgement can leave a valid newly created output even if the parent reports failure. Parent verifies hashes after return but cannot automatically remove a possibly user-owned output safely. RLIMIT_FSIZE is a per-file cap, not a total temporary-storage quota. Windows Job Objects and native Android PDF backend remain NOT TESTED. The milestone stays OPEN until security/platform gates and 1000+/5000-page benchmarks pass. No APK/EXE built for this source-only change.
+
+
+## B01 same milestone — parent-validated staged output (2026-10-25)
+
+**Risk addressed:** before this change the worker could publish the caller-visible output and then crash or time out before its acknowledgement; the parent would report failure while a new final PDF remained. In addition, parent-side SHA revalidation happened after worker publication.
+
+**Production change:** `page_isolation.run_page_operation` now gives the child a randomly named, private same-filesystem staging directory, not the requested destination. The child performs its bounded PDF write and fsync there. Only after a positive worker response, nonempty staged file check and independent parent SHA-256 revalidation does the parent atomically `os.link` the staged result to the final no-clobber destination. Worker termination precedes staging cleanup. This applies to both extract and merge; existing outputs and originals remain protected.
+
+**Regression additions:** verify only the parent publishes the final file; simulated final-link failure leaves no final file or staging directory; simulated source change after worker success blocks publication; timeout cleanup is checked. Existing synthetic PDF round-trip tests remain. This is a correctness/cleanup improvement, **not** a sandbox or Windows support.
+
+**Acceptance gate:** new and existing tests plus source CI must pass on the final SHA; any failure is FAIL rather than inferred success. At the time of committing this note the latest CI result is **NOT TESTED / pending verification**. Physical Android/Windows runs, 1000+/5000-page benchmarks, OCR and Windows Job Objects remain **NOT TESTED**. No APK/EXE build was needed for this POSIX-source fix. Parent process termination immediately after successful final hard-link can still leave a valid published output; filesystem crashes and malicious host processes remain outside this guarantee.
+
+**Research:** used Python standard-library `tempfile.TemporaryDirectory` and `os.link` documented behavior, no third-party code copied; see https://docs.python.org/3/library/tempfile.html and https://docs.python.org/3/library/os.html#os.link.
