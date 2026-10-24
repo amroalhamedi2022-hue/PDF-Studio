@@ -7,6 +7,10 @@ not by itself sandbox parsers or guarantee bounded memory for malicious PDFs.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
+import multiprocessing as mp
+import os
+import time
 from pathlib import Path
 
 from .jobs import sha256_file
@@ -58,7 +62,7 @@ def _sample_indices(page_count: int, limit: int) -> tuple[int, ...]:
     return tuple(sorted({round(i * (page_count - 1) / (limit - 1)) for i in range(limit)}))
 
 
-def inspect_pdf(source: str | Path, *, password: str | None = None, sample_limit: int = 4) -> DocumentInspection:
+def _inspect_pdf_direct(source: str | Path, *, password: str | None = None, sample_limit: int = 4) -> DocumentInspection:
     """Return a read-only metadata/text-layer sample; does NOT run OCR.
 
     Encrypted PDFs return metadata without page details unless unlocked. A
@@ -84,8 +88,8 @@ def inspect_pdf(source: str | Path, *, password: str | None = None, sample_limit
                 return DocumentInspection(str(src), size, digest, None, True, True, None, None, (), ("encrypted document; page data unavailable",))
             count = len(reader.pages)
             metadata = reader.metadata
-            title = str(metadata.title) if metadata and metadata.title else None
-            author = str(metadata.author) if metadata and metadata.author else None
+            title = str(metadata.title)[:2048] if metadata and metadata.title else None
+            author = str(metadata.author)[:2048] if metadata and metadata.author else None
             results = []
             warnings = []
             for index in _sample_indices(count, sample_limit):
@@ -103,3 +107,94 @@ def inspect_pdf(source: str | Path, *, password: str | None = None, sample_limit
         raise
     except Exception as exc:
         raise DocumentInspectionError("PDF parser failed; original file not modified") from exc
+
+
+def _inspection_worker(pipe, source: str, password: str | None, sample_limit: int,
+                       max_pages: int, memory_bytes: int, cpu_seconds: int) -> None:
+    """Untrusted pypdf code executes only after POSIX process limits are set."""
+    try:
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        import logging
+        logging.getLogger("pypdf").setLevel(logging.CRITICAL)
+        result = _inspect_pdf_direct(source, password=password, sample_limit=sample_limit)
+        if result.page_count is not None and result.page_count > max_pages:
+            pipe.send(("error", "page-count-cap"))
+        else:
+            pipe.send(("ok", result))
+    except BaseException:
+        # Parser exception strings may contain private PDF data: never forward.
+        try:
+            pipe.send(("error", "parse-failed"))
+        except (BrokenPipeError, EOFError, OSError, MemoryError):
+            pass
+    finally:
+        pipe.close()
+
+
+def inspect_pdf(source: str | Path, *, password: str | None = None,
+                sample_limit: int = 4, timeout_seconds: float = 90.0,
+                max_memory_mb: int = 768, max_pages: int = 10000) -> DocumentInspection:
+    """Inspect an untrusted PDF in a bounded POSIX child; never modify source.
+
+    Windows and unsupported platforms fail closed until OS-specific isolation
+    exists. This is resource containment, NOT a filesystem/syscall sandbox.
+    """
+    if not isinstance(sample_limit, int) or isinstance(sample_limit, bool) or not 0 <= sample_limit <= 32:
+        raise ValueError("sample_limit must be an integer in 0..32")
+    for name, value in (("max_memory_mb", max_memory_mb), ("max_pages", max_pages)):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be finite and positive")
+    if os.name != "posix":
+        raise DocumentInspectionError("isolated inspection unavailable on this platform")
+    try:
+        import resource
+        if not hasattr(resource, "RLIMIT_AS") or not hasattr(resource, "RLIMIT_CPU"):
+            raise ImportError("resource limits unavailable")
+    except ImportError as exc:
+        raise DocumentInspectionError("OS resource limits unavailable") from exc
+    src = Path(source).resolve(strict=True)
+    if not src.is_file():
+        raise DocumentInspectionError("source must be a regular file")
+    with src.open("rb") as stream:
+        if stream.read(5) != b"%PDF-":
+            raise DocumentInspectionError("missing PDF file header")
+    context = mp.get_context("spawn")
+    parent, child = context.Pipe(duplex=False)
+    process = context.Process(target=_inspection_worker,
+                              args=(child, str(src), password, sample_limit, max_pages,
+                                    max_memory_mb * 1024 * 1024,
+                                    max(2, math.ceil(timeout_seconds) + 1)),
+                              daemon=True)
+    try:
+        process.start()
+        child.close()
+        if not parent.poll(timeout_seconds):
+            raise DocumentInspectionError("isolated PDF inspection timed out")
+        try:
+            message = parent.recv()
+        except (EOFError, OSError) as exc:
+            raise DocumentInspectionError("PDF inspection worker terminated") from exc
+        if not isinstance(message, tuple) or len(message) != 2 or message[0] != "ok":
+            raise DocumentInspectionError("isolated PDF inspection rejected input")
+        result = message[1]
+        if not isinstance(result, DocumentInspection):
+            raise DocumentInspectionError("invalid isolated inspection response")
+        if sha256_file(src) != result.sha256:
+            raise DocumentInspectionError("PDF changed during inspection")
+        return result
+    finally:
+        child.close()
+        parent.close()
+        if process.pid is not None:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=1)
+                if process.is_alive():
+                    process.kill()
+            process.join(timeout=1)
+        process.close()
