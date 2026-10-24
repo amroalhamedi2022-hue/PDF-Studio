@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 680" role="img" aria-labelledby="title desc">
+  <title id="title">PDF Studio — Liquid Glass</title>
+  <desc id="desc">Multicolor dimensional glass PDF document with scanning brackets and editing pen, PDF Studio lettering below</desc>
+  <defs>
+    <linearGradient id="glass" x1="0" x2="1" y1="0" y2="1">
+      <stop stop-color="#53eaff"/><stop offset=".2" stop-color="#0570fa"/><stop offset=".52" stop-color="#6842fa"/><stop offset=".78" stop-color="#f533a9"/><stop offset="1" stop-color="#ffb14c"/>
+    </linearGradient>
+    <linearGradient id="edge" x1=".1" y1="0" x2=".95" y2="1">
+      <stop stop-color="#c9ffff"/><stop offset=".38" stop-color="#6fd9ff"/><stop offset=".7" stop-color="#fa8df5"/><stop offset="1" stop-color="#ffd56d"/>
+    </linearGradient>
+    <linearGradient id="shine" x1=".3" y1="0" x2=".8" y2="1">
+      <stop stop-color="#ffffff" stop-opacity=".9"/><stop offset=".4" stop-color="#ffffff" stop-opacity=".08"/><stop offset="1" stop-color="#fff4e5" stop-opacity=".45"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" x2="1">
+      <stop stop-color="#088dff"/><stop offset=".3" stop-color="#5553ef"/><stop offset=".58" stop-color="#fa38ae"/><stop offset=".88" stop-color="#ff8054"/><stop offset="1" stop-color="#ffc046"/>
+    </linearGradient>
+    <linearGradient id="pencil" x1="0" x2="1">
+      <stop stop-color="#24d9ff"/><stop offset=".34" stop-color="#1769ef"/><stop offset=".68" stop-color="#b242ea"/><stop offset="1" stop-color="#ff7e58"/>
+    </linearGradient>
+    <filter id="glow" x="-35%" y="-35%" width="170%" height="170%"><feGaussianBlur stdDeviation="11"/></filter>
+    <filter id="shadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="15" stdDeviation="12" flood-color="#333179" flood-opacity=".48"/>
+    </filter>
+    <clipPath id="pageclip"><rect x="93" y="39" width="365" height="445" rx="74"/></clipPath>
+  </defs>
+
+  <path d="M117 68q0-30 38-30h243l62 63v328q0 54-54 54H146q-53 0-53-54V114q0-46 24-46" fill="#6e44f9" opacity=".35" filter="url(#glow)"/>
+  <g filter="url(#shadow)">
+    <rect x="93" y="39" width="365" height="445" rx="74" fill="url(#glass)" stroke="url(#edge)" stroke-width="9"/>
+    <g clip-path="url(#pageclip)">
+      <path d="M90 56q130-65 290 6Q206 93 143 257q-47 131-55 169z" fill="#fff" opacity=".22"/>
+      <path d="M90 383q176 83 370-156v300H89z" fill="#e900a0" opacity=".18"/>
+      <path d="M90 64q40-40 112-24" fill="none" stroke="#fff" opacity=".85" stroke-width="9" stroke-linecap="round"/>
+      <path d="M398 39v68q0 25 27 25h35z" fill="#ff9e44" stroke="#ffd79e" stroke-width="8" stroke-linejoin="round"/>
+      <rect x="142" y="164" width="210" height="18" rx="9" fill="url(#shine)" stroke="#e7faff" stroke-width="3"/>
+      <rect x="142" y="204" width="248" height="16" rx="8" fill="url(#shine)" stroke="#e7faff" stroke-width="3"/>
+      <rect x="142" y="242" width="201" height="16" rx="8" fill="url(#shine)" stroke="#e7faff" stroke-width="3"/>
+      <g fill="none" stroke="url(#edge)" stroke-width="15" stroke-linejoin="round" stroke-linecap="round">
+        <path d="M173 318h-28v31 M329 318h26v31 M145 399v25h32 M355 399v25h-30"/>
+      </g>
+      <path d="M235 406l41-106 41 106m-64-41h46" stroke="#ffffff" stroke-width="19" stroke-linejoin="round" stroke-linecap="round" fill="none" opacity=".95"/>
+      <path d="M131 375h256" stroke="#ffc471" stroke-width="5" stroke-linecap="round" opacity=".95"/>
+      <path d="M132 375h256" stroke="#fff7d9" stroke-width="18" stroke-linecap="round" opacity=".48" filter="url(#glow)"/>
+    </g>
+    <rect x="103" y="48" width="347" height="426" rx="66" fill="none" stroke="#d6f3ff" stroke-width="2" opacity=".7"/>
+  </g>
+
+  <g transform="translate(422 242) rotate(29)" filter="url(#shadow)">
+    <rect x="-31" y="-23" width="62" height="204" rx="23" fill="url(#pencil)" stroke="url(#edge)" stroke-width="7"/>
+    <path d="M-31 142h62v34l-31 58-31-58z" fill="#ffb77e" stroke="#ffefcb" stroke-width="6" stroke-linejoin="round"/>
+    <path d="M-10 217l10 19 10-19z" fill="#281664"/>
+    <path d="M-21 3v124" stroke="#f7feff" stroke-width="7" stroke-linecap="round" opacity=".7"/>
+    <rect x="-31" y="14" width="62" height="15" rx="6" fill="#ddfaff" opacity=".65"/>
+  </g>
+
+  <text x="280" y="600" font-size="76" font-weight="900" font-family="Arial Rounded MT Bold, Trebuchet MS, DejaVu Sans, sans-serif" text-anchor="middle" letter-spacing="-3" fill="#251a6c" opacity=".42" stroke="#271b8a" stroke-width="8" paint-order="stroke">PDF Studio</text>
+  <text x="280" y="591" font-size="76" font-weight="900" font-family="Arial Rounded MT Bold, Trebuchet MS, DejaVu Sans, sans-serif" text-anchor="middle" letter-spacing="-3" fill="url(#word)" stroke="#ecfaff" stroke-width="5" paint-order="stroke">PDF Studio</text>
+  <path d="M79 628H482" stroke="url(#edge)" opacity=".25" stroke-width="2"/>
+</svg>
