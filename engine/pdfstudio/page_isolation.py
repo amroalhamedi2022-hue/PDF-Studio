@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 import multiprocessing as mp
 import os
+import tempfile
 import time
 from pathlib import Path
 
@@ -79,38 +80,47 @@ def run_page_operation(action: str, sources, output, selection=None, *,
     resolved = tuple(_validated_source(p) for p in sources)
     destination = _validated_output(output, resolved)
     digests = tuple(sha256_file(p) for p in resolved)
-    ctx = mp.get_context("spawn")
-    parent, child = ctx.Pipe(duplex=False)
-    proc = ctx.Process(target=_worker, args=(child, action, tuple(map(str, resolved)),
-                       str(destination), selection, digests,
-                       max_memory_mb * 1024 * 1024, max(2, math.ceil(timeout_seconds) + 1),
-                       max_pages), daemon=True)
-    try:
-        proc.start()
-        child.close()
-        if not parent.poll(timeout_seconds):
-            raise PageToolError("isolated page operation timed out")
+    # The child writes only into a private same-filesystem staging directory.
+    # The parent alone publishes the finished result after worker acknowledgement
+    # and source revalidation. A timed-out/crashed child cannot leave a new final
+    # output behind; publication remains atomic and no-clobber via os.link.
+    with tempfile.TemporaryDirectory(prefix=".pdfstudio-stage-", dir=destination.parent) as stage_dir:
+        staged = Path(stage_dir) / "result.pdf"
+        ctx = mp.get_context("spawn")
+        parent, child = ctx.Pipe(duplex=False)
+        proc = ctx.Process(target=_worker, args=(child, action, tuple(map(str, resolved)),
+                           str(staged), selection, digests,
+                           max_memory_mb * 1024 * 1024, max(2, math.ceil(timeout_seconds) + 1),
+                           max_pages), daemon=True)
         try:
-            response = parent.recv()
-        except (EOFError, OSError) as exc:
-            raise PageToolError("isolated page worker terminated") from exc
-        if response == ("error", "output-exists"):
-            raise FileExistsError("output already exists")
-        if response != ("ok",):
-            raise PageToolError("isolated page operation rejected input or exceeded limits")
-        if not destination.is_file() or destination.stat().st_size == 0:
-            raise PageToolError("isolated page operation did not publish a PDF")
-        if any(sha256_file(p) != digest for p, digest in zip(resolved, digests)):
-            raise PageToolError("source changed during page operation")
-        return destination
-    finally:
-        child.close()
-        parent.close()
-        if proc.pid is not None:
-            if proc.is_alive():
-                proc.terminate()
-                proc.join(timeout=1)
+            proc.start()
+            child.close()
+            if not parent.poll(timeout_seconds):
+                raise PageToolError("isolated page operation timed out")
+            try:
+                response = parent.recv()
+            except (EOFError, OSError) as exc:
+                raise PageToolError("isolated page worker terminated") from exc
+            if response == ("error", "output-exists"):
+                raise FileExistsError("output already exists")
+            if response != ("ok",):
+                raise PageToolError("isolated page operation rejected input or exceeded limits")
+            if not staged.is_file() or staged.stat().st_size == 0:
+                raise PageToolError("isolated page operation did not stage a PDF")
+            if any(sha256_file(p) != digest for p, digest in zip(resolved, digests)):
+                raise PageToolError("source changed during page operation")
+            # This is the *only* publication of the caller-visible destination.
+            # A pre-existing file or symlink causes FileExistsError, never replace.
+            os.link(staged, destination)
+            return destination
+        finally:
+            child.close()
+            parent.close()
+            if proc.pid is not None:
                 if proc.is_alive():
-                    proc.kill()
-            proc.join(timeout=1)
-        proc.close()
+                    proc.terminate()
+                    proc.join(timeout=1)
+                    if proc.is_alive():
+                        proc.kill()
+                proc.join(timeout=1)
+            proc.close()
