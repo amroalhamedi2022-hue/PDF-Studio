@@ -202,12 +202,25 @@ class LibraryIndex:
                        pages: Iterable[tuple[int, str]], *, expected_sha256: str) -> IndexResult:
         """Ingest OCR results from a trusted pipeline; does not perform OCR.
 
-        Caller must independently validate source page count and OCR model.
+        Caller must independently validate OCR quality and model licenses.
         """
+        from pypdf import PdfReader
         src = self._source(source)
         digest = sha256_file(src)
         if digest != expected_sha256:
             raise SourceChangedError("OCR text belongs to a different source PDF")
+        try:
+            with src.open("rb") as fh:
+                reader = PdfReader(fh, strict=False)
+                if reader.is_encrypted:
+                    raise LibraryIndexError("encrypted PDF: explicit unlock required")
+                actual_pages = len(reader.pages)
+        except LibraryIndexError:
+            raise
+        except Exception as exc:
+            raise LibraryIndexError("cannot verify OCR page count") from exc
+        if actual_pages != page_count:
+            raise LibraryIndexError("OCR page count differs from the source PDF")
         return self._commit_pages(src, digest, page_count, pages, "ocr")
 
     def search(self, query: str, *, limit: int = 25) -> list[SearchHit]:
