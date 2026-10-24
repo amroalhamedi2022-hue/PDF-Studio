@@ -16,6 +16,8 @@ from typing import Iterable
 
 from pypdf import PdfReader, PdfWriter
 
+from .page_ranges import PageRangeError, parse_page_ranges
+
 
 class PageToolError(ValueError):
     """PDF page operation rejected without modifying the source."""
@@ -71,17 +73,23 @@ def _publish(writer: PdfWriter, output: Path) -> None:
             pass
 
 
-def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int]) -> Path:
-    """Extract 0-based page indexes in caller-specified order to a new PDF."""
+def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int] | str) -> Path:
+    """Extract 0-based indices or one-based inclusive text ranges to a new PDF."""
     src = _validated_source(source)
     dst = _validated_output(output, (src,))
-    selected = list(pages)
-    if not selected or any(not isinstance(i, int) or isinstance(i, bool) for i in selected):
-        raise PageToolError("provide one or more integer 0-based page indexes")
+    if not isinstance(pages, str):
+        selected = list(pages)
+        if not selected or any(not isinstance(i, int) or isinstance(i, bool) for i in selected):
+            raise PageToolError("provide one or more integer 0-based page indexes")
     with src.open("rb") as fh:
         reader = PdfReader(fh, strict=False)
         _preflight_reader(reader)
         count = len(reader.pages)
+        if isinstance(pages, str):
+            try:
+                selected = parse_page_ranges(pages, count)
+            except PageRangeError as exc:
+                raise PageToolError(str(exc)) from exc
         if any(i < 0 or i >= count for i in selected):
             raise PageToolError(f"page index outside 0..{count - 1}")
         writer = PdfWriter()
