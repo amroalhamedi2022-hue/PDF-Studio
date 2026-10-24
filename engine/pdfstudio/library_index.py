@@ -1,7 +1,7 @@
 """Offline page-level SQLite FTS5 index for PDF Studio B01.
 
 Stores text locally with source SHA-256 provenance; does not run OCR.
-Do not feed untrusted PDFs without a memory/CPU-limited parser subprocess.
+Native text/page-count parsing now uses a bounded POSIX subprocess; Windows and Android\nrequire independently validated platform isolation before enabling untrusted input.
 The caller must store the index in application-private storage.
 """
 
@@ -174,49 +174,40 @@ class LibraryIndex:
             return IndexResult(str(src), digest, count, len(seen), True, provenance)
 
     def index_pdf(self, source: str | Path) -> IndexResult:
-        """Index native text only. Encrypted PDFs require explicit unlock."""
-        from pypdf import PdfReader
+        """Index native text in a resource-limited child process on POSIX."""
+        from .bounded_parser import IsolatedPdfReader, ParserIsolationError
         src = self._source(source)
         digest = sha256_file(src)
         try:
-            with src.open("rb") as fh:
-                reader = PdfReader(fh, strict=False)
-                if reader.is_encrypted:
-                    raise LibraryIndexError("encrypted PDF: explicit unlock required")
-                count = len(reader.pages)
-                if count < 1 or count > self.max_pages:
-                    raise LibraryIndexError("page count outside configured index bounds")
-
-                def texts() -> Iterator[tuple[int, str]]:
-                    for i, page in enumerate(reader.pages):
-                        # Requires future subprocess resource caps for hostile PDFs.
-                        yield i, page.extract_text() or ""
-
-                return self._commit_pages(src, digest, count, texts(), "native")
+            with IsolatedPdfReader(src, max_pages=self.max_pages,
+                                   max_chars_per_page=self.max_chars_per_page,
+                                   max_total_chars=self.max_total_chars) as reader:
+                return self._commit_pages(src, digest, reader.page_count,
+                                          reader.pages(), "native")
         except (LibraryIndexError, SourceChangedError):
             raise
+        except ParserIsolationError as exc:
+            raise LibraryIndexError("isolated PDF extraction rejected input: " + str(exc)) from exc
         except Exception as exc:
             raise LibraryIndexError("PDF extraction failed; previous index retained") from exc
 
     def index_ocr_text(self, source: str | Path, page_count: int,
                        pages: Iterable[tuple[int, str]], *, expected_sha256: str) -> IndexResult:
-        """Ingest OCR results from a trusted pipeline; does not perform OCR.
-
-        Caller must independently validate OCR quality and model licenses.
-        """
-        from pypdf import PdfReader
+        """Ingest trusted OCR text after isolated verification of source page count."""
+        from .bounded_parser import IsolatedPdfReader, ParserIsolationError
         src = self._source(source)
         digest = sha256_file(src)
         if digest != expected_sha256:
             raise SourceChangedError("OCR text belongs to a different source PDF")
         try:
-            with src.open("rb") as fh:
-                reader = PdfReader(fh, strict=False)
-                if reader.is_encrypted:
-                    raise LibraryIndexError("encrypted PDF: explicit unlock required")
-                actual_pages = len(reader.pages)
-        except LibraryIndexError:
-            raise
+            with IsolatedPdfReader(src, max_pages=self.max_pages,
+                                   max_chars_per_page=self.max_chars_per_page,
+                                   max_total_chars=self.max_total_chars,
+                                   extract_text=False) as reader:
+                actual_pages = reader.page_count
+                list(reader.pages())  # require the worker's successful end marker
+        except ParserIsolationError as exc:
+            raise LibraryIndexError("cannot verify OCR source pages: " + str(exc)) from exc
         except Exception as exc:
             raise LibraryIndexError("cannot verify OCR page count") from exc
         if actual_pages != page_count:
