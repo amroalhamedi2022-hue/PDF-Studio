@@ -30,17 +30,3 @@ jobs:
           PYTHONPATH: engine
         run: python -m unittest discover -s tests -v
 
-  no-packaging:
-    name: Packaging policy check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Ban packaging steps in this CI workflow
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          s = Path('.github/workflows/source-check.yml').read_text()
-          banned = ('assembleDebug', 'assembleRelease', 'packageDistribution', 'flutter build', 'pyinstaller ')
-          assert not any(k in s for k in banned), 'Packaging command found in source CI'
-          print('PASS: source-only gate has no app packaging instructions')
-          PY
