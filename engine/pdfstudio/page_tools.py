@@ -17,6 +17,7 @@ from typing import Iterable
 from pypdf import PdfReader, PdfWriter
 
 from .page_ranges import PageRangeError, parse_page_ranges
+from .jobs import sha256_file
 
 
 class PageToolError(ValueError):
@@ -57,13 +58,15 @@ def _validated_output(path: str | Path, sources: Iterable[Path]) -> Path:
     return dst
 
 
-def _publish(writer: PdfWriter, output: Path) -> None:
+def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...], digests: tuple[str, ...]) -> None:
     fd, temporary = tempfile.mkstemp(prefix=".pdfstudio-", suffix=".part", dir=output.parent)
     try:
         with os.fdopen(fd, "wb") as fh:
             writer.write(fh)
             fh.flush()
             os.fsync(fh.fileno())
+        if any(sha256_file(src) != digest for src, digest in zip(sources, digests)):
+            raise PageToolError('source changed during PDF operation')
         # Atomic no-clobber for a new file, unlike os.replace which overwrites.
         os.link(temporary, output)
     finally:
@@ -73,7 +76,8 @@ def _publish(writer: PdfWriter, output: Path) -> None:
             pass
 
 
-def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int] | str) -> Path:
+def _extract_pages_direct(source: str | Path, output: str | Path, pages: Iterable[int] | str,
+                          digests: tuple[str, ...], max_pages: int) -> Path:
     """Extract 0-based indices or one-based inclusive text ranges to a new PDF."""
     src = _validated_source(source)
     dst = _validated_output(output, (src,))
@@ -85,6 +89,8 @@ def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int] |
         reader = PdfReader(fh, strict=False)
         _preflight_reader(reader)
         count = len(reader.pages)
+        if count < 1 or count > max_pages:
+            raise PageToolError('page count exceeds configured limit')
         if isinstance(pages, str):
             try:
                 selected = parse_page_ranges(pages, count)
@@ -95,11 +101,12 @@ def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int] |
         writer = PdfWriter()
         for index in selected:
             writer.add_page(reader.pages[index])
-        _publish(writer, dst)
+        _publish(writer, dst, (src,), digests)
     return dst
 
 
-def merge_pdfs(sources: Iterable[str | Path], output: str | Path) -> Path:
+def _merge_pdfs_direct(sources: Iterable[str | Path], output: str | Path,
+                       digests: tuple[str, ...], max_pages: int) -> Path:
     """Merge page ranges of all source PDFs in order, into a new PDF."""
     inputs = [_validated_source(p) for p in sources]
     if len(inputs) < 2:
@@ -107,11 +114,37 @@ def merge_pdfs(sources: Iterable[str | Path], output: str | Path) -> Path:
     dst = _validated_output(output, inputs)
     writer = PdfWriter()
     with ExitStack() as stack:
+        total_pages = 0
         for path in inputs:
             fh = stack.enter_context(path.open("rb"))
             reader = PdfReader(fh, strict=False)
             _preflight_reader(reader)
+            count = len(reader.pages)
+            total_pages += count
+            if count < 1 or total_pages > max_pages:
+                raise PageToolError('total page count exceeds configured limit')
             for page in reader.pages:
                 writer.add_page(page)
-        _publish(writer, dst)
+        _publish(writer, dst, tuple(inputs), digests)
     return dst
+
+
+def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int] | str,
+                  *, timeout_seconds: float = 90.0, max_memory_mb: int = 768,
+                  max_pages: int = 10000) -> Path:
+    """Extract into a new PDF in a resource-limited child, never in the UI process."""
+    from .page_isolation import run_page_operation
+    selection = pages if isinstance(pages, str) else list(pages)
+    return run_page_operation("extract", (source,), output, selection,
+                              timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+                              max_pages=max_pages)
+
+
+def merge_pdfs(sources: Iterable[str | Path], output: str | Path, *,
+               timeout_seconds: float = 90.0, max_memory_mb: int = 768,
+               max_pages: int = 10000) -> Path:
+    """Merge into a new PDF in a resource-limited child, preserving all sources."""
+    from .page_isolation import run_page_operation
+    return run_page_operation("merge", tuple(sources), output,
+                              timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+                              max_pages=max_pages)
