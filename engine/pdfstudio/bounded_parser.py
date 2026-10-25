@@ -204,15 +204,18 @@ class IsolatedPdfReader:
         if self._pipe is not None:
             self._pipe.close()
             self._pipe = None
-        if self._process is not None:
-            if self._process.is_alive():
-                self._process.terminate()
-                self._process.join(timeout=1)
-                if self._process.is_alive():
-                    self._process.kill()
-            self._process.join(timeout=1)
-            self._process.close()
-            self._process = None
-        if self._job is not None:
-            self._job.close()
-            self._job = None
+        try:
+            if self._process is not None:
+                if self._process.pid is not None:
+                    if self._process.is_alive():
+                        self._process.terminate()
+                        self._process.join(timeout=1)
+                        if self._process.is_alive():
+                            self._process.kill()
+                    self._process.join(timeout=1)
+                self._process.close()
+                self._process = None
+        finally:
+            if self._job is not None:
+                self._job.close()
+                self._job = None
