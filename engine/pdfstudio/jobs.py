@@ -275,6 +275,32 @@ class JobJournal:
             "resume_authorized": False,
         }
 
+
+    def verified_checkpoint(self, job_id: str, page_index: int, stage: str) -> bool:
+        """Verify one checkpoint using the (job, page, stage) SQLite primary key.
+
+        Intended for callers holding worker_session. Unlike resumable_pages,
+        this avoids rehashing every other artifact for each resumed page.
+        The stage runner performs full source and artifact audits at entry
+        and exit; this method checks only the requested artifact.
+        """
+        if stage not in STAGES:
+            raise ValueError("unsupported stage")
+        if not isinstance(page_index, int) or isinstance(page_index, bool) or page_index < 0:
+            raise ValueError("invalid page index")
+        with self._open() as db:
+            row = db.execute(
+                "SELECT artifact, artifact_sha256 FROM checkpoints "
+                "WHERE job_id=? AND page_index=? AND stage=?",
+                (job_id, page_index, stage)
+            ).fetchone()
+        if row is None:
+            return False
+        try:
+            return sha256_file(row["artifact"]) == row["artifact_sha256"]
+        except OSError:
+            return False
+
     def resumable_pages(self, job_id: str, stage: str) -> list[int]:
         """Return only pages with verified artifacts at this pipeline stage."""
         if stage not in STAGES:
