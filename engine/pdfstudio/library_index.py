@@ -1,7 +1,7 @@
 """Offline page-level SQLite FTS5 index for PDF Studio B01.
 
 Stores text locally with source SHA-256 provenance; does not run OCR.
-Native text/page-count parsing now uses a bounded POSIX subprocess; Windows and Android\nrequire independently validated platform isolation before enabling untrusted input.
+Native text/page-count parsing uses a bounded POSIX worker or Windows Job Object;\nAndroid requires independently validated platform isolation before untrusted input.
 The caller must store the index in application-private storage.
 """
 
