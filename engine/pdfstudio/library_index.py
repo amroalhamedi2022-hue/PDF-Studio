@@ -211,14 +211,14 @@ class LibraryIndex:
         except Exception as exc:
             raise LibraryIndexError("PDF extraction failed; previous index retained") from exc
 
-    def index_native_text_checkpoints(self, journal: "JobJournal", job_id: str, *,
+    def _index_text_checkpoints(self, journal: "JobJournal", job_id: str, stage: str, *,
                                       cancel_requested: Callable[[], bool] | None = None) -> IndexResult:
-        """Atomically index a *complete* SHA-verified native_text checkpoint stage.
+        """Atomically index a complete SHA-verified text checkpoint stage.
 
         A local fenced worker lease prevents another journal worker from
         replacing checkpoints during ingestion. Text is streamed page by page
         from private artifacts and hashed as read, not trusted from SQLite.
-        This is born-digital text only, never OCR or searchable-PDF creation.
+        Text artifacts are trusted only after byte-capped SHA-256 verification;\n        this does not execute OCR or create a searchable PDF.
         """
         from .bounded_parser import IsolatedPdfReader, ParserIsolationError
         from .jobs import JobJournal
@@ -228,6 +228,8 @@ class LibraryIndex:
         if cancel_requested is not None and not callable(cancel_requested):
             raise TypeError("cancel_requested must be callable")
         self._check_cancel(cancel_requested)
+        if stage not in ("native_text", "ocr"):
+            raise ValueError("unsupported text checkpoint stage")
         with journal.worker_session(job_id):
             job = journal.get_job(job_id)
             count = job["page_count"]
@@ -237,11 +239,11 @@ class LibraryIndex:
             with journal._open() as db:
                 rows = db.execute(
                     "SELECT page_index, artifact, artifact_sha256 FROM checkpoints "
-                    "WHERE job_id=? AND stage='native_text' ORDER BY page_index",
-                    (job_id,),
+                    "WHERE job_id=? AND stage=? ORDER BY page_index",
+                    (job_id, stage),
                 ).fetchall()
             if len(rows) != count or any(row["page_index"] != i for i, row in enumerate(rows)):
-                raise LibraryIndexError("native text checkpoint stage is incomplete")
+                raise LibraryIndexError("text checkpoint stage is incomplete")
             # Verify the actual PDF page count in a bounded child, rather than
             # relying solely on user-provided journal metadata.
             try:
@@ -280,9 +282,27 @@ class LibraryIndex:
             # artifact. Always consume/check all checkpoints before replacing
             # the previous FTS transaction; never use the unchanged-PDF shortcut.
             return self._commit_pages(
-                src, job["input_sha256"], count, verified_pages(), "native",
+                src, job["input_sha256"], count, verified_pages(),\n                "native" if stage == "native_text" else "ocr",
                 cancel_requested, skip_unchanged_native=False,
             )
+
+    def index_native_text_checkpoints(self, journal: "JobJournal", job_id: str, *,
+                                      cancel_requested: Callable[[], bool] | None = None) -> IndexResult:
+        """Index complete born-digital page checkpoints, never OCR."""
+        return self._index_text_checkpoints(
+            journal, job_id, "native_text", cancel_requested=cancel_requested
+        )
+
+    def index_ocr_checkpoints(self, journal: "JobJournal", job_id: str, *,
+                              cancel_requested: Callable[[], bool] | None = None) -> IndexResult:
+        """Index complete OCR UTF-8 page checkpoints after SHA and PDF verification.
+
+        The OCR engine must separately produce immutable page artifacts under a
+        fenced journal worker; this adapter neither runs OCR nor builds a PDF.
+        """
+        return self._index_text_checkpoints(
+            journal, job_id, "ocr", cancel_requested=cancel_requested
+        )
 
     def index_ocr_text(self, source: str | Path, page_count: int,
                        pages: Iterable[tuple[int, str]], *, expected_sha256: str,
