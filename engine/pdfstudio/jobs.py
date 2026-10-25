@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .worker_lease import exclusive_worker_lock
 
-STAGES = frozenset({"prepared", "ocr", "layout", "assembled"})
+STAGES = frozenset({"prepared", "native_text", "ocr", "layout", "assembled"})
 STATES = frozenset({"pending", "running", "paused", "failed", "complete", "cancelled"})
 TRANSITIONS = {
     "pending": frozenset({"running", "cancelled"}),
