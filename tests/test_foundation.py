@@ -41,8 +41,9 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(self.journal.resumable_pages(job, "ocr"), [0])
         artifact.write_text("damaged")
         self.assertEqual(self.journal.resumable_pages(job, "ocr"), [])
-        artifact.write_text("corrected")
-        self.journal.checkpoint(job, 0, "ocr", artifact)
+        corrected = self.root / "page0-corrected.txt"
+        corrected.write_text("corrected")
+        self.journal.checkpoint(job, 0, "ocr", corrected)
         self.journal.set_state(job, "paused")
         self.assertEqual(JobJournal(self.root / "jobs.sqlite").resumable_pages(job, "ocr"), [0])
 
