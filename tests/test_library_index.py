@@ -120,7 +120,7 @@ class LibraryIndexTests(unittest.TestCase):
         self.index.index_pdf(other)
         hits = self.index.search('world')
         self.assertEqual(len(hits), 2)
-        self.assertEqual({h.source for h in hits}, {str(self.pdf), str(other)})
+        self.assertEqual({h.source for h in hits}, {str(self.pdf.resolve()), str(other.resolve())})
         self.assertTrue(all(h.page_number == 1 for h in hits))
 
     def test_partial_ocr_pages_and_rejected_update_preserve_previous_index(self):
