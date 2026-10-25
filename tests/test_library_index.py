@@ -8,7 +8,7 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from pdfstudio.jobs import SourceChangedError, sha256_file
-from pdfstudio.library_index import LibraryIndex, LibraryIndexError
+from pdfstudio.library_index import LibraryIndex, LibraryIndexError, LibraryIndexCancelled
 
 
 class LibraryIndexTests(unittest.TestCase):
@@ -136,6 +136,72 @@ class LibraryIndexTests(unittest.TestCase):
         with self.assertRaises(LibraryIndexError):
             self.index.index_ocr_text(self.pdf, 4, [(0, 'not real')], expected_sha256=sha256_file(self.pdf))
         self.assertEqual(self.index.search('real'), [])
+
+    def test_native_cancel_before_start_preserves_existing_index(self):
+        self.index.index_pdf(self.pdf)
+        before = self.pdf.read_bytes()
+        with self.assertRaises(LibraryIndexCancelled):
+            self.index.index_pdf(self.pdf, cancel_requested=lambda: True)
+        self.assertEqual(self.pdf.read_bytes(), before)
+        self.assertEqual(len(self.index.search('hello')), 1)
+        self.index.integrity_check()
+
+    def test_ocr_cancel_mid_batch_rolls_back_old_fts_and_document_row(self):
+        self.write_pdf('Hello World PDF Studio', page_count=3)
+        self.index.index_pdf(self.pdf)
+        original = self.pdf.read_bytes()
+        calls = 0
+
+        def cancel_after_first_page():
+            nonlocal calls
+            calls += 1
+            # Start check, page zero check, then cancel at page one.
+            return calls >= 3
+
+        with self.assertRaises(LibraryIndexCancelled):
+            self.index.index_ocr_text(
+                self.pdf, 3, [(0, 'newterm first'), (1, 'newterm second')],
+                expected_sha256=sha256_file(self.pdf),
+                cancel_requested=cancel_after_first_page)
+        self.assertEqual(self.pdf.read_bytes(), original)
+        self.assertEqual(len(self.index.search('hello')), 1)
+        self.assertEqual(self.index.search('newterm'), [])
+        self.assertEqual(self.index.search('world')[0].provenance, 'native')
+        self.index.integrity_check()
+
+    def test_cancel_just_before_commit_does_not_publish_partial_ocr(self):
+        self.index.index_pdf(self.pdf)
+        calls = 0
+
+        def cancel_at_commit():
+            nonlocal calls
+            calls += 1
+            # Before start, before page insertion, immediately before commit.
+            return calls >= 3
+
+        with self.assertRaises(LibraryIndexCancelled):
+            self.index.index_ocr_text(
+                self.pdf, 1, [(0, 'newterm')],
+                expected_sha256=sha256_file(self.pdf),
+                cancel_requested=cancel_at_commit)
+        self.assertEqual(len(self.index.search('hello')), 1)
+        self.assertEqual(self.index.search('newterm'), [])
+        self.index.integrity_check()
+
+    def test_uncancelled_ocr_and_invalid_cancel_callback(self):
+        with self.assertRaises(TypeError):
+            self.index.index_pdf(self.pdf, cancel_requested=True)
+        with self.assertRaises(TypeError):
+            self.index.index_ocr_text(self.pdf, 1, [(0, 'unused')],
+                                      expected_sha256=sha256_file(self.pdf),
+                                      cancel_requested='stop')
+        result = self.index.index_ocr_text(
+            self.pdf, 1, [(0, 'OCR confirmed')],
+            expected_sha256=sha256_file(self.pdf),
+            cancel_requested=lambda: False)
+        self.assertEqual(result.indexed_pages, 1)
+        self.assertEqual(self.index.search('confirmed')[0].provenance, 'ocr')
+        self.index.integrity_check()
 
     def test_remove_clears_fts_and_keeps_original(self):
         original = self.pdf.read_bytes()
