@@ -5,6 +5,7 @@ Only synthetic PDFs and private temporary artifacts; no OCR or user documents.
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 from pypdf import PdfWriter
@@ -151,7 +152,7 @@ class CheckpointIndexTests(unittest.TestCase):
 
     def ocr_checkpoint(self, page, data):
         self.artifacts.mkdir(exist_ok=True)
-        artifact = self.artifacts / ("ocr-%d-%d.txt" % (page, len(data)))
+        artifact = self.artifacts / ("ocr-%d-%s.txt" % (page, uuid.uuid4().hex))
         artifact.write_bytes(data)
         with self.journal.worker_session(self.job_id) as owner:
             owner.checkpoint(page, "ocr", artifact)
