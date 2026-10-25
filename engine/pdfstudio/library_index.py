@@ -174,7 +174,7 @@ class LibraryIndex:
             return IndexResult(str(src), digest, count, len(seen), True, provenance)
 
     def index_pdf(self, source: str | Path) -> IndexResult:
-        """Index native text in a resource-limited child process on POSIX."""
+        """Index native text in a resource-limited POSIX or Windows child."""
         from .bounded_parser import IsolatedPdfReader, ParserIsolationError
         src = self._source(source)
         digest = sha256_file(src)
