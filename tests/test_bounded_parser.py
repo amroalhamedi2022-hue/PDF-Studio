@@ -4,13 +4,15 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from pdfstudio.bounded_parser import IsolatedPdfReader, ParserIsolationError
+from pdfstudio.windows_job import WindowsJobError
 
 
-@unittest.skipUnless(os.name == 'posix', 'POSIX resource caps required')
+@unittest.skipUnless(os.name in ('posix', 'nt'), 'OS resource caps required')
 class BoundedParserTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -76,6 +78,15 @@ class BoundedParserTests(unittest.TestCase):
             self._reader(timeout_seconds=0)
         with self.assertRaises(ValueError):
             self._reader(max_memory_mb=0)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows Job Object required')
+    def test_windows_job_assignment_failure_fails_closed(self):
+        original = self.path.read_bytes()
+        with patch('pdfstudio.bounded_parser.WindowsJob.assign', side_effect=WindowsJobError('denied')):
+            with self.assertRaises(ParserIsolationError):
+                with self._reader():
+                    pass
+        self.assertEqual(self.path.read_bytes(), original)
 
     def test_wall_clock_deadline_fail_closed(self):
         with self.assertRaises(ParserIsolationError):
