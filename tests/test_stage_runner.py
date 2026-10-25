@@ -128,7 +128,8 @@ class StageRunnerTests(unittest.TestCase):
         with self.assertRaises(SourceChangedError):
             run_page_stage(self.journal, self.job, "ocr", mutate_source)
         self.assertEqual(self.journal.get_job(self.job)["state"], "failed")
-        self.assertEqual(self.journal.recovery_snapshot(self.job, "ocr")["valid_pages"], ())
+        with self.assertRaises(SourceChangedError):
+            self.journal.recovery_snapshot(self.job, "ocr")
         with self.assertRaises(SourceChangedError):
             run_page_stage(self.journal, self.job, "ocr", self.produce)
 
