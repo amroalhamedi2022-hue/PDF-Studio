@@ -130,3 +130,14 @@ Implement page ranges, metadata browser, safe file IO, and parser-isolation limi
 **CI status:** pending verification for the commit introducing this slice. No APK/EXE was needed: these are Python source and hosted Windows/POSIX behavior checks. Do not claim PASS until both CI jobs and benchmark output are reviewed. B01 remains OPEN; next step is real measured limits and safe worker-ownership protocol for automatic resume.
 
 **Research:** uses existing BSD-3-Clause pypdf, SQLite and Python stdlib resource/getrusage APIs, no new dependencies or copied third-party code.
+
+
+## B01 same milestone — fenced local worker sessions (2026-10-25)
+
+**Scope and acceptance:** a fresh worker can claim a pending job; a crashed session can be resumed on the *same local host* only after the OS releases its exclusive lock. New ownership rotates a SQLite token and rejects stale checkpoint/state writes. A live worker prevents a competing claim; original SHA and existing final output block unsafe recovery. Clean session exit leaves an unfinished job paused. Previously created legacy running/paused/failed jobs with no ownership history intentionally fail closed. This is B01/B03 groundwork, not full automatic pipeline resume.
+
+**Production:** `engine/pdfstudio/worker_lease.py` provides Python stdlib POSIX flock / Windows msvcrt nonblocking file locks; `jobs.py` persists a generation/token per job and enforces ownership under SQLite BEGIN IMMEDIATE for checkpoints and state transitions. Lock files remain in private local journal storage and are deliberately never unlinked. The lock must stay held throughout worker processing; callers must use `worker_session` and its methods. No network/distributed filesystem, old legacy worker, or uncooperative process is assumed safe. The OS lock is advisory and does not sandbox untrusted PDF parsing.
+
+**Tests:** `tests/test_worker_lease.py` exercises clean resume, concurrent claim refusal, stale token fencing, subprocess abrupt exit, legacy refusal, changed source and existing output. Check actual Linux/Windows CI before marking PASS. No APK/EXE needed for this Python/SQLite cross-platform change; Windows CI is necessary to verify msvcrt behavior. Source references: Python fcntl/msvcrt documentation and official SQLite BEGIN IMMEDIATE transactions. No external code copied or dependencies added.
+
+**Still NOT TESTED:** integration with a full OCR/reconstruction scheduler, reboot/disk corruption, Android SAF, real scanned files, 5000-page/2GB stress, device tests and deliverable apps. Next: review CI and connect fenced sessions to real per-page stage scheduling while preserving journal compatibility.

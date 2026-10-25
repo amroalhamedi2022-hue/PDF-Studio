@@ -14,6 +14,8 @@ import sqlite3
 import uuid
 from pathlib import Path
 
+from .worker_lease import exclusive_worker_lock
+
 STAGES = frozenset({"prepared", "ocr", "layout", "assembled"})
 STATES = frozenset({"pending", "running", "paused", "failed", "complete", "cancelled"})
 TRANSITIONS = {
@@ -45,6 +47,24 @@ def sha256_file(path: str | Path, chunk_bytes: int = 1024 * 1024) -> str:
     return result.hexdigest()
 
 
+class WorkerSession:
+    """Fenced owner of one job. Keep the context open while processing pages."""
+
+    def __init__(self, journal: "JobJournal", job_id: str, token: str):
+        self._journal = journal
+        self.job_id = job_id
+        self._token = token
+
+    def checkpoint(self, page_index: int, stage: str, artifact: str | Path) -> None:
+        self._journal.checkpoint(self.job_id, page_index, stage, artifact, worker_token=self._token)
+
+    def set_state(self, next_state: str) -> None:
+        self._journal.set_state(self.job_id, next_state, worker_token=self._token)
+
+    def recovery_snapshot(self, stage: str) -> dict:
+        return self._journal.recovery_snapshot(self.job_id, stage)
+
+
 class JobJournal:
     def __init__(self, database: str | Path):
         self.database = Path(database)
@@ -66,6 +86,11 @@ class JobJournal:
                     artifact TEXT NOT NULL,
                     artifact_sha256 TEXT NOT NULL,
                     PRIMARY KEY (job_id, page_index, stage)
+                );
+                CREATE TABLE IF NOT EXISTS worker_owners (
+                    job_id TEXT PRIMARY KEY REFERENCES jobs(job_id) ON DELETE CASCADE,
+                    generation INTEGER NOT NULL CHECK(generation >= 1),
+                    token TEXT
                 );
             """)
 
@@ -121,26 +146,75 @@ class JobJournal:
         if current != job["input_sha256"]:
             raise SourceChangedError("original PDF content changed; do not resume")
 
-    def set_state(self, job_id: str, next_state: str) -> None:
+    @staticmethod
+    def _check_worker_token(db: sqlite3.Connection, job_id: str, token: str | None) -> None:
+        owner = db.execute("SELECT token FROM worker_owners WHERE job_id=?", (job_id,)).fetchone()
+        if (owner is not None and (owner["token"] is None or owner["token"] != token)) \
+                or (owner is None and token is not None):
+            raise JobSafetyError("worker ownership token is absent or stale")
+
+    def set_state(self, job_id: str, next_state: str, *, worker_token: str | None = None) -> None:
         if next_state not in STATES:
             raise ValueError("unknown state")
         self.verify_source(job_id)
         with self._open() as db:
+            db.execute("BEGIN IMMEDIATE")
             current = db.execute("SELECT state FROM jobs WHERE job_id=?", (job_id,)).fetchone()
             if current is None:
                 raise KeyError(job_id)
+            self._check_worker_token(db, job_id, worker_token)
             if next_state not in TRANSITIONS[current["state"]]:
                 raise JobSafetyError(f"invalid transition: {current['state']} -> {next_state}")
+            self.verify_source(job_id)
             db.execute("UPDATE jobs SET state=? WHERE job_id=?", (next_state, job_id))
 
-    def checkpoint(self, job_id: str, page_index: int, stage: str, artifact: str | Path) -> None:
+    @contextmanager
+    def worker_session(self, job_id: str) -> Iterator[WorkerSession]:
+        """Exclusive crash-recoverable worker ownership on one local host.
+
+        The OS lock must be held for the ENTIRE worker lifetime. A crashed
+        process releases the OS lock; a new session rotates the SQLite token,
+        fencing stale writers. Legacy running/paused/failed jobs with no
+        ownership history fail closed: their workers may still be live.
+        """
+        self.verify_source(job_id)
+        with exclusive_worker_lock(self.database, job_id):
+            self.verify_source(job_id)
+            token = uuid.uuid4().hex
+            with self._open() as db:
+                db.execute("BEGIN IMMEDIATE")
+                job = db.execute("SELECT state, output FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+                if job is None:
+                    raise KeyError(job_id)
+                owner = db.execute("SELECT generation FROM worker_owners WHERE job_id=?", (job_id,)).fetchone()
+                if job["state"] not in ("pending", "paused", "failed", "running"):
+                    raise JobSafetyError("terminal job cannot be resumed")
+                if owner is None and job["state"] != "pending":
+                    raise JobSafetyError("legacy job has no verified worker ownership history")
+                if Path(job["output"]).exists():
+                    raise FileExistsError("final output already exists; refusing resume")
+                self.verify_source(job_id)
+                db.execute("""INSERT INTO worker_owners(job_id, generation, token) VALUES(?, 1, ?)
+                    ON CONFLICT(job_id) DO UPDATE SET generation=generation+1, token=excluded.token""",
+                    (job_id, token))
+                db.execute("UPDATE jobs SET state='running' WHERE job_id=?", (job_id,))
+            try:
+                yield WorkerSession(self, job_id, token)
+            finally:
+                with self._open() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    owner = db.execute("SELECT token FROM worker_owners WHERE job_id=?", (job_id,)).fetchone()
+                    if owner is not None and owner["token"] == token:
+                        db.execute("UPDATE jobs SET state='paused' WHERE job_id=? AND state='running'", (job_id,))
+                        db.execute("UPDATE worker_owners SET token=NULL WHERE job_id=?", (job_id,))
+
+    def checkpoint(self, job_id: str, page_index: int, stage: str, artifact: str | Path,
+                   *, worker_token: str | None = None) -> None:
         if stage not in STAGES:
             raise ValueError("unsupported stage")
         job = self.get_job(job_id)
         if not isinstance(page_index, int) or isinstance(page_index, bool) or not 0 <= page_index < job["page_count"]:
             raise ValueError("page index out of bounds")
-        if job["state"] != "running":
-            raise JobSafetyError("cannot write checkpoints outside a running job")
         self.verify_source(job_id)
         file = Path(artifact).resolve(strict=True)
         if file == Path(job["source"]) or file == Path(job["output"]):
@@ -149,6 +223,16 @@ class JobJournal:
             raise JobSafetyError("artifact must be a file")
         digest = sha256_file(file)
         with self._open() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT state FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            if current is None:
+                raise KeyError(job_id)
+            self._check_worker_token(db, job_id, worker_token)
+            if current["state"] != "running":
+                raise JobSafetyError("cannot write checkpoints outside a running job")
+            self.verify_source(job_id)
+            if sha256_file(file) != digest:
+                raise JobSafetyError("checkpoint artifact changed during verification")
             db.execute("""INSERT INTO checkpoints VALUES (?,?,?,?,?)
                 ON CONFLICT(job_id,page_index,stage) DO UPDATE SET
                 artifact=excluded.artifact, artifact_sha256=excluded.artifact_sha256""",
