@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from .jobs import JobJournal, JobSafetyError, STAGES, sha256_file
+from .jobs import JobJournal, JobSafetyError, STAGES
 
 
 def run_page_stage(
@@ -38,13 +38,14 @@ def run_page_stage(
     with journal.worker_session(job_id) as owner:
         snapshot = owner.recovery_snapshot(stage)
         good = set(snapshot["valid_pages"])
-        for page in range(journal.get_job(job_id)["page_count"]):
+        page_count = journal.get_job(job_id)["page_count"]
+        for page in range(page_count):
             if cancel_requested is not None and cancel_requested():
                 owner.set_state("paused")
                 return {"processed": tuple(processed), "skipped": tuple(skipped), "cancelled": True}
             # Re-verify immediately before skipping; a file can change after
             # the snapshot. A changed artifact is rebuilt rather than trusted.
-            if page in good and page in journal.resumable_pages(job_id, stage):
+            if page in good and journal.verified_checkpoint(job_id, page, stage):
                 skipped.append(page)
                 continue
             artifact = Path(process_page(page)).resolve(strict=True)
