@@ -23,7 +23,7 @@ class ParserIsolationError(ValueError):
 
 def _parse_worker(pipe, gate, filename: str, max_pages: int, page_chars: int,
                   total_chars: int, memory_bytes: int, cpu_seconds: int,
-                  extract_text: bool) -> None:
+                  extract_text: bool, selected_pages: tuple[int, ...] | None) -> None:
     try:
         # Import pypdf only *after* limits have been applied.
         if os.name == "nt":
@@ -53,9 +53,14 @@ def _parse_worker(pipe, gate, filename: str, max_pages: int, page_chars: int,
                 pipe.send(("error", "page-count"))
                 return
             pipe.send(("count", count))
+            if selected_pages is not None and any(i >= count for i in selected_pages):
+                pipe.send(("error", "page-selection"))
+                return
             if extract_text:
                 accumulated = 0
-                for index, page in enumerate(reader.pages):
+                indexes = range(count) if selected_pages is None else selected_pages
+                for index in indexes:
+                    page = reader.pages[index]
                     text = page.extract_text() or ""
                     if not isinstance(text, str) or len(text) > page_chars:
                         pipe.send(("error", "page-text-cap"))
@@ -87,7 +92,8 @@ class IsolatedPdfReader:
     def __init__(self, source: str | Path, *, max_pages: int,
                  max_chars_per_page: int, max_total_chars: int,
                  timeout_seconds: float = 90.0, max_memory_mb: int = 768,
-                 extract_text: bool = True):
+                 extract_text: bool = True,
+                 page_indexes: tuple[int, ...] | list[int] | None = None):
         if os.name not in ("posix", "nt"):
             raise ParserIsolationError("memory-capped PDF parsing is not available on this host")
         if os.name == "posix":
@@ -106,6 +112,16 @@ class IsolatedPdfReader:
         if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) \
                 or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
+        if page_indexes is not None:
+            if not isinstance(page_indexes, (tuple, list)) or any(
+                not isinstance(i, int) or isinstance(i, bool) or i < 0 or i >= max_pages
+                for i in page_indexes
+            ):
+                raise ValueError("page_indexes must be a sequence of nonnegative indexes below max_pages")
+            if len(set(page_indexes)) != len(page_indexes):
+                raise ValueError("page_indexes cannot contain duplicates")
+            page_indexes = tuple(sorted(page_indexes))
+        self.page_indexes = page_indexes
         self.source = Path(source)
         self.max_pages = max_pages
         self.page_chars = max_chars_per_page
@@ -134,7 +150,7 @@ class IsolatedPdfReader:
                            args=(child, gate, str(self.source), self.max_pages,
                                  self.page_chars, self.total_chars,
                                  self.memory_bytes, max(2, math.ceil(self.timeout) + 1),
-                                 self.extract_text), daemon=True)
+                                 self.extract_text, self.page_indexes), daemon=True)
         self._pipe = parent
         self._process = proc
         self._job = job
@@ -184,7 +200,8 @@ class IsolatedPdfReader:
                 raise ParserIsolationError("invalid count-only PDF response")
             self._require_clean_exit()
             return
-        for expected in range(self.page_count or 0):
+        expected_indexes = range(self.page_count or 0) if self.page_indexes is None else self.page_indexes
+        for expected in expected_indexes:
             response = self._receive()
             if len(response) != 3 or response[0] != "page" or response[1] != expected:
                 raise ParserIsolationError("PDF worker page sequence invalid")
