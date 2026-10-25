@@ -67,7 +67,7 @@ class IsolatedPageToolTests(unittest.TestCase):
         observed = []
 
         def check_publication(staged, destination):
-            self.assertEqual(Path(destination), self.out)
+            self.assertEqual(Path(destination).resolve(), self.out.resolve())
             self.assertEqual(Path(staged).name, "result.pdf")
             self.assertTrue(Path(staged).parent.name.startswith(".pdfstudio-stage-"))
             self.assertTrue(Path(staged).is_file())
