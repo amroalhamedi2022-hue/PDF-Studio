@@ -2,6 +2,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pdfstudio import JobJournal, JobSafetyError
 from pdfstudio.stage_runner import run_page_stage
@@ -65,6 +66,57 @@ class StageRunnerTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             run_page_stage(self.journal, self.job, "ocr", None)
         self.assertEqual(self.journal.get_job(self.job)["state"], "pending")
+
+
+    def test_resume_uses_linear_page_lookups_not_full_rescans(self):
+        large_job = self.journal.create_job(self.source, self.root / "large.pdf", 128)
+        run_page_stage(self.journal, large_job, "ocr", self.produce)
+        original = self.journal.verified_checkpoint
+        checks = []
+
+        def check_one(job_id, page, stage):
+            checks.append(page)
+            return original(job_id, page, stage)
+
+        with patch.object(self.journal, "resumable_pages",
+                          side_effect=AssertionError("quadratic full scan")):
+            with patch.object(self.journal, "verified_checkpoint", side_effect=check_one):
+                result = run_page_stage(self.journal, large_job, "ocr", self.produce)
+        self.assertEqual(result["processed"], ())
+        self.assertEqual(len(result["skipped"]), 128)
+        self.assertEqual(checks, list(range(128)))
+
+    def test_checkpoint_changed_after_snapshot_is_reprocessed(self):
+        run_page_stage(self.journal, self.job, "ocr", self.produce)
+        original = self.root / "page_0_1.txt"
+        calls = 0
+
+        def mutate_before_first_skip():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                original.write_text("corrupted after audit", encoding="utf-8")
+            return False
+
+        result = run_page_stage(
+            self.journal, self.job, "ocr", self.produce,
+            cancel_requested=mutate_before_first_skip)
+        self.assertEqual(result["processed"], (0,))
+        self.assertEqual(result["skipped"], (1, 2))
+        self.assertEqual(self.journal.recovery_snapshot(self.job, "ocr")["invalid_pages"], ())
+
+    def test_single_page_checkpoint_validation(self):
+        with self.assertRaises(ValueError):
+            self.journal.verified_checkpoint(self.job, -1, "ocr")
+        with self.assertRaises(ValueError):
+            self.journal.verified_checkpoint(self.job, True, "ocr")
+        with self.assertRaises(ValueError):
+            self.journal.verified_checkpoint(self.job, 0, "unrecognized")
+        self.assertFalse(self.journal.verified_checkpoint(self.job, 0, "ocr"))
+        run_page_stage(self.journal, self.job, "ocr", self.produce)
+        self.assertTrue(self.journal.verified_checkpoint(self.job, 0, "ocr"))
+        (self.root / "page_0_1.txt").unlink()
+        self.assertFalse(self.journal.verified_checkpoint(self.job, 0, "ocr"))
 
 
 if __name__ == "__main__":
