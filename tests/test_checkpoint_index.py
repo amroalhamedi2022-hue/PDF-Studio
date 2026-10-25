@@ -149,5 +149,79 @@ class CheckpointIndexTests(unittest.TestCase):
         self.index.integrity_check()
 
 
+    def ocr_checkpoint(self, page, data):
+        self.artifacts.mkdir(exist_ok=True)
+        artifact = self.artifacts / ("ocr-%d-%d.txt" % (page, len(data)))
+        artifact.write_bytes(data)
+        with self.journal.worker_session(self.job_id) as owner:
+            owner.checkpoint(page, "ocr", artifact)
+        return artifact
+
+    def test_ocr_checkpoints_index_arabic_and_english_with_page_links(self):
+        self.ocr_checkpoint(0, "إِلَى الطَّبِيب English".encode("utf-8"))
+        self.ocr_checkpoint(1, "Second scanned page".encode("utf-8"))
+        result = self.index.index_ocr_checkpoints(self.journal, self.job_id)
+        self.assertEqual((result.page_count, result.indexed_pages, result.provenance),
+                         (2, 2, "ocr"))
+        self.assertEqual(self.index.search("الى الطبيب")[0].page_number, 1)
+        self.assertEqual(self.index.search("scanned")[0].page_number, 2)
+        self.assertEqual(sha256_file(self.pdf), self.digest)
+        self.assertFalse((self.root / "output.pdf").exists())
+        self.index.integrity_check()
+
+    def test_ocr_incomplete_stage_does_not_replace_native_search(self):
+        self.stage()
+        self.index.index_native_text_checkpoints(self.journal, self.job_id)
+        self.ocr_checkpoint(0, b"unpublished OCR")
+        with self.assertRaises(LibraryIndexError):
+            self.index.index_ocr_checkpoints(self.journal, self.job_id)
+        self.assertEqual(self.index.search("unpublished"), [])
+        self.assertEqual(self.index.search("page 1")[0].provenance, "native")
+        self.index.integrity_check()
+
+    def test_ocr_corruption_and_invalid_utf8_preserve_old_index(self):
+        self.ocr_checkpoint(0, b"first OCR")
+        artifact = self.ocr_checkpoint(1, b"second OCR")
+        self.index.index_ocr_checkpoints(self.journal, self.job_id)
+        artifact.write_bytes(b"tampered")
+        with self.assertRaises(LibraryIndexError):
+            self.index.index_ocr_checkpoints(self.journal, self.job_id)
+        self.assertEqual(len(self.index.search("second")), 1)
+        self.ocr_checkpoint(1, b"\xff")
+        with self.assertRaises(LibraryIndexError):
+            self.index.index_ocr_checkpoints(self.journal, self.job_id)
+        self.assertEqual(len(self.index.search("second")), 1)
+        self.index.integrity_check()
+
+    def test_ocr_correction_same_source_replaces_stale_terms(self):
+        self.ocr_checkpoint(0, b"incorrect")
+        self.ocr_checkpoint(1, b"untouched")
+        self.index.index_ocr_checkpoints(self.journal, self.job_id)
+        self.ocr_checkpoint(0, b"corrected")
+        self.assertTrue(self.index.index_ocr_checkpoints(self.journal, self.job_id).changed)
+        self.assertEqual(self.index.search("incorrect"), [])
+        self.assertEqual(self.index.search("corrected")[0].provenance, "ocr")
+        self.index.integrity_check()
+
+    def test_ocr_cancel_rolls_back_search_transaction(self):
+        self.stage()
+        self.index.index_native_text_checkpoints(self.journal, self.job_id)
+        self.ocr_checkpoint(0, b"new scan")
+        self.ocr_checkpoint(1, b"new scan")
+        calls = 0
+        def cancel():
+            nonlocal calls
+            calls += 1
+            return calls >= 6
+        with self.assertRaises(LibraryIndexCancelled):
+            self.index.index_ocr_checkpoints(
+                self.journal, self.job_id, cancel_requested=cancel
+            )
+        self.assertEqual(self.index.search("scan"), [])
+        self.assertEqual(self.index.search("page 0")[0].provenance, "native")
+        self.index.integrity_check()
+
+
+
 if __name__ == "__main__":
     unittest.main()
