@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from .jobs import sha256_file
+from .windows_job import WindowsJob, WindowsJobError
 
 
 class DocumentInspectionError(ValueError):
@@ -109,14 +110,18 @@ def _inspect_pdf_direct(source: str | Path, *, password: str | None = None, samp
         raise DocumentInspectionError("PDF parser failed; original file not modified") from exc
 
 
-def _inspection_worker(pipe, source: str, password: str | None, sample_limit: int,
+def _inspection_worker(pipe, gate, source: str, password: str | None, sample_limit: int,
                        max_pages: int, memory_bytes: int, cpu_seconds: int) -> None:
-    """Untrusted pypdf code executes only after POSIX process limits are set."""
+    """Untrusted pypdf code executes only after OS process limits are set."""
     try:
-        import resource
-        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        if os.name == "nt":
+            if gate is None or not gate.wait(15):
+                return
+        else:
+            import resource
+            resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         import logging
         logging.getLogger("pypdf").setLevel(logging.CRITICAL)
         result = _inspect_pdf_direct(source, password=password, sample_limit=sample_limit)
@@ -137,10 +142,10 @@ def _inspection_worker(pipe, source: str, password: str | None, sample_limit: in
 def inspect_pdf(source: str | Path, *, password: str | None = None,
                 sample_limit: int = 4, timeout_seconds: float = 90.0,
                 max_memory_mb: int = 768, max_pages: int = 10000) -> DocumentInspection:
-    """Inspect an untrusted PDF in a bounded POSIX child; never modify source.
+    """Inspect an untrusted PDF in a bounded POSIX or Windows child.
 
-    Windows and unsupported platforms fail closed until OS-specific isolation
-    exists. This is resource containment, NOT a filesystem/syscall sandbox.
+    POSIX uses RLIMIT; Windows uses a pre-parse Job Object. This is resource
+    containment, NOT a filesystem/syscall sandbox. Source remains read-only.
     """
     if not isinstance(sample_limit, int) or isinstance(sample_limit, bool) or not 0 <= sample_limit <= 32:
         raise ValueError("sample_limit must be an integer in 0..32")
@@ -149,14 +154,15 @@ def inspect_pdf(source: str | Path, *, password: str | None = None,
             raise ValueError(f"{name} must be a positive integer")
     if not isinstance(timeout_seconds, (int, float)) or isinstance(timeout_seconds, bool) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be finite and positive")
-    if os.name != "posix":
+    if os.name not in ("posix", "nt"):
         raise DocumentInspectionError("isolated inspection unavailable on this platform")
-    try:
-        import resource
-        if not hasattr(resource, "RLIMIT_AS") or not hasattr(resource, "RLIMIT_CPU"):
-            raise ImportError("resource limits unavailable")
-    except ImportError as exc:
-        raise DocumentInspectionError("OS resource limits unavailable") from exc
+    if os.name == "posix":
+        try:
+            import resource
+            if not hasattr(resource, "RLIMIT_AS") or not hasattr(resource, "RLIMIT_CPU"):
+                raise ImportError("resource limits unavailable")
+        except ImportError as exc:
+            raise DocumentInspectionError("OS resource limits unavailable") from exc
     src = Path(source).resolve(strict=True)
     if not src.is_file():
         raise DocumentInspectionError("source must be a regular file")
@@ -165,15 +171,29 @@ def inspect_pdf(source: str | Path, *, password: str | None = None,
             raise DocumentInspectionError("missing PDF file header")
     context = mp.get_context("spawn")
     parent, child = context.Pipe(duplex=False)
+    gate = context.Event() if os.name == "nt" else None
+    try:
+        job = WindowsJob(max_memory_mb * 1024 * 1024) if os.name == "nt" else None
+    except WindowsJobError as exc:
+        parent.close()
+        child.close()
+        raise DocumentInspectionError("Windows inspection limits unavailable") from exc
     process = context.Process(target=_inspection_worker,
-                              args=(child, str(src), password, sample_limit, max_pages,
+                              args=(child, gate, str(src), password, sample_limit, max_pages,
                                     max_memory_mb * 1024 * 1024,
                                     max(2, math.ceil(timeout_seconds) + 1)),
                               daemon=True)
     try:
         process.start()
         child.close()
-        if not parent.poll(timeout_seconds):
+        if job is not None:
+            try:
+                job.assign(process.pid)
+            except WindowsJobError as exc:
+                raise DocumentInspectionError("Windows inspection worker could not be confined") from exc
+            gate.set()
+        deadline = time.monotonic() + timeout_seconds
+        if not parent.poll(max(0.0, deadline - time.monotonic())):
             raise DocumentInspectionError("isolated PDF inspection timed out")
         try:
             message = parent.recv()
@@ -184,6 +204,9 @@ def inspect_pdf(source: str | Path, *, password: str | None = None,
         result = message[1]
         if not isinstance(result, DocumentInspection):
             raise DocumentInspectionError("invalid isolated inspection response")
+        process.join(timeout=max(0.0, deadline - time.monotonic()))
+        if process.is_alive() or process.exitcode != 0:
+            raise DocumentInspectionError("isolated inspection worker did not exit cleanly")
         if sha256_file(src) != result.sha256:
             raise DocumentInspectionError("PDF changed during inspection")
         return result
@@ -198,3 +221,5 @@ def inspect_pdf(source: str | Path, *, password: str | None = None,
                     process.kill()
             process.join(timeout=1)
         process.close()
+        if job is not None:
+            job.close()
