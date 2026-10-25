@@ -20,11 +20,8 @@ def exclusive_worker_lock(database: Path, job_id: str) -> Iterator[None]:
     name = database.name + "." + hashlib.sha256(job_id.encode("utf-8")).hexdigest() + ".worker.lock"
     lock_path = database.resolve().with_name(name)
     with lock_path.open("a+b") as stream:
-        stream.seek(0)
-        if not stream.read(1):
-            stream.seek(0)
-            stream.write(b"\\0")
-            stream.flush()
+        # Windows byte-range locks can extend past EOF. Never read/write a
+        # region while another process holds the Windows mandatory lock.
         stream.seek(0)
         if os.name == "nt":
             import msvcrt
