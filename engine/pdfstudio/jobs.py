@@ -221,6 +221,8 @@ class JobJournal:
             raise JobSafetyError("artifact may not be the original or final PDF")
         if not file.is_file():
             raise JobSafetyError("artifact must be a file")
+        if file == self.database.resolve():
+            raise JobSafetyError("journal database cannot be a checkpoint artifact")
         digest = sha256_file(file)
         with self._open() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -233,6 +235,24 @@ class JobJournal:
             self.verify_source(job_id)
             if sha256_file(file) != digest:
                 raise JobSafetyError("checkpoint artifact changed during verification")
+
+            # A checkpoint is an immutable page/stage artifact, not a shared
+            # scratch filename. Reusing one path for another key (or job) lets
+            # a later page overwrite bytes already trusted by an earlier one.
+            reused = db.execute(
+                "SELECT job_id, page_index, stage FROM checkpoints WHERE artifact=? "
+                "AND NOT (job_id=? AND page_index=? AND stage=?) LIMIT 1",
+                (str(file), job_id, page_index, stage),
+            ).fetchone()
+            if reused is not None:
+                raise JobSafetyError("checkpoint artifact path is already assigned to another page or job")
+            existing = db.execute(
+                "SELECT artifact, artifact_sha256 FROM checkpoints "
+                "WHERE job_id=? AND page_index=? AND stage=?",
+                (job_id, page_index, stage),
+            ).fetchone()
+            if existing is not None and existing["artifact"] == str(file) and existing["artifact_sha256"] != digest:
+                raise JobSafetyError("checkpoint artifacts are immutable; use a new path for changed bytes")
             db.execute("""INSERT INTO checkpoints VALUES (?,?,?,?,?)
                 ON CONFLICT(job_id,page_index,stage) DO UPDATE SET
                 artifact=excluded.artifact, artifact_sha256=excluded.artifact_sha256""",
