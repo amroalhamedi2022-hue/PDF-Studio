@@ -4,7 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pdfstudio import JobJournal, JobSafetyError
+import pdfstudio.jobs as jobs_module
+from pdfstudio import JobJournal, JobSafetyError, SourceChangedError
 from pdfstudio.stage_runner import run_page_stage
 
 
@@ -72,19 +73,30 @@ class StageRunnerTests(unittest.TestCase):
         large_job = self.journal.create_job(self.source, self.root / "large.pdf", 128)
         run_page_stage(self.journal, large_job, "ocr", self.produce)
         original = self.journal.verified_checkpoint
+        original_hash = jobs_module.sha256_file
         checks = []
+        source_hashes = []
 
         def check_one(job_id, page, stage):
             checks.append(page)
             return original(job_id, page, stage)
 
-        with patch.object(self.journal, "resumable_pages",
-                          side_effect=AssertionError("quadratic full scan")):
-            with patch.object(self.journal, "verified_checkpoint", side_effect=check_one):
-                result = run_page_stage(self.journal, large_job, "ocr", self.produce)
+        def count_source_hash(path, *args, **kwargs):
+            if Path(path).resolve() == self.source.resolve():
+                source_hashes.append(1)
+            return original_hash(path, *args, **kwargs)
+
+        with patch("pdfstudio.jobs.sha256_file", side_effect=count_source_hash):
+            with patch.object(self.journal, "resumable_pages",
+                              side_effect=AssertionError("quadratic full scan")):
+                with patch.object(self.journal, "verified_checkpoint", side_effect=check_one):
+                    result = run_page_stage(self.journal, large_job, "ocr", self.produce)
         self.assertEqual(result["processed"], ())
         self.assertEqual(len(result["skipped"]), 128)
         self.assertEqual(checks, list(range(128)))
+        # Full source SHA is constant per stage (entry/exit audits), not once or
+        # twice per page. Artifact SHA verification remains per checkpoint.
+        self.assertEqual(len(source_hashes), 6)
 
     def test_checkpoint_changed_after_snapshot_is_reprocessed(self):
         run_page_stage(self.journal, self.job, "ocr", self.produce)
@@ -104,6 +116,21 @@ class StageRunnerTests(unittest.TestCase):
         self.assertEqual(result["processed"], (0,))
         self.assertEqual(result["skipped"], (1, 2))
         self.assertEqual(self.journal.recovery_snapshot(self.job, "ocr")["invalid_pages"], ())
+
+    def test_source_change_during_page_stage_fails_closed(self):
+        def mutate_source(page):
+            artifact = self.root / ("mutated-page-%d.txt" % page)
+            artifact.write_text("page=%d" % page, encoding="utf-8")
+            if page == 0:
+                self.source.write_bytes(b"%PDF-1.7\\nchanged during processing\\n")
+            return artifact
+
+        with self.assertRaises(SourceChangedError):
+            run_page_stage(self.journal, self.job, "ocr", mutate_source)
+        self.assertEqual(self.journal.get_job(self.job)["state"], "failed")
+        self.assertEqual(self.journal.recovery_snapshot(self.job, "ocr")["valid_pages"], ())
+        with self.assertRaises(SourceChangedError):
+            run_page_stage(self.journal, self.job, "ocr", self.produce)
 
     def test_single_page_checkpoint_validation(self):
         with self.assertRaises(ValueError):
