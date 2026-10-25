@@ -44,7 +44,7 @@ def run_native_text_stage(
     max_memory_mb: int = 768,
     cancel_requested: Callable[[], bool] | None = None,
 ) -> dict:
-    """Resume 'prepared' page artifacts with actual bounded PDF text extraction.
+    """Resume 'native_text' page artifacts with actual bounded PDF text extraction.
 
     Each artifact is UTF-8 page text, not a searchable PDF or OCR result.
     A failed or cancelled worker leaves committed pages available for resume.
@@ -60,14 +60,14 @@ def run_native_text_stage(
     processed: list[int] = []
     skipped: list[int] = []
     with journal.worker_session(job_id) as owner:
-        snapshot = owner.recovery_snapshot("prepared")
+        snapshot = owner.recovery_snapshot("native_text")
         job = journal.get_job(job_id)
         if job["page_count"] > max_pages:
             raise ValueError("job exceeds configured page limit")
         verified = set(snapshot["valid_pages"])
         missing: list[int] = []
         for page in range(job["page_count"]):
-            if page in verified and journal.verified_checkpoint(job_id, page, "prepared"):
+            if page in verified and journal.verified_checkpoint(job_id, page, "native_text"):
                 skipped.append(page)
             else:
                 missing.append(page)
@@ -90,9 +90,9 @@ def run_native_text_stage(
                         return {"processed": tuple(processed),
                                 "skipped": tuple(skipped), "cancelled": True}
                     artifact = _save_page_text(folder, page, text)
-                    owner.checkpoint(page, "prepared", artifact)
+                    owner.checkpoint(page, "native_text", artifact)
                     processed.append(page)
-        final = owner.recovery_snapshot("prepared")
+        final = owner.recovery_snapshot("native_text")
         if final["invalid_pages"] or final["missing_pages"]:
             raise JobSafetyError("native text stage is incomplete or damaged")
     return {"processed": tuple(processed), "skipped": tuple(skipped), "cancelled": False}
