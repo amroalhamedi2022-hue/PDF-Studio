@@ -52,10 +52,10 @@ def _parse_worker(pipe, gate, filename: str, max_pages: int, page_chars: int,
             if count < 1 or count > max_pages:
                 pipe.send(("error", "page-count"))
                 return
-            pipe.send(("count", count))
             if selected_pages is not None and any(i >= count for i in selected_pages):
                 pipe.send(("error", "page-selection"))
                 return
+            pipe.send(("count", count))
             if extract_text:
                 accumulated = 0
                 indexes = range(count) if selected_pages is None else selected_pages
