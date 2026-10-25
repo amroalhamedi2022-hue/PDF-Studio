@@ -47,6 +47,24 @@ class WorkerLeaseTests(unittest.TestCase):
             with self.journal.worker_session(self.job):
                 pass
 
+    def test_checkpoint_artifacts_are_unique_immutable_and_not_the_journal(self):
+        page = self.root / "page.txt"
+        page.write_text("first page", encoding="utf-8")
+        with self.journal.worker_session(self.job) as owner:
+            with self.assertRaisesRegex(JobSafetyError, "journal database"):
+                owner.checkpoint(0, "ocr", self.database)
+            owner.checkpoint(0, "ocr", page)
+            # A different page may not alias the same mutable file.
+            with self.assertRaisesRegex(JobSafetyError, "already assigned"):
+                owner.checkpoint(1, "ocr", page)
+            # Replacing bytes at a registered path violates immutability;
+            # a processor must publish a new path and then checkpoint it.
+            page.write_text("replacement bytes", encoding="utf-8")
+            with self.assertRaisesRegex(JobSafetyError, "immutable"):
+                owner.checkpoint(0, "ocr", page)
+        snapshot = self.journal.recovery_snapshot(self.job, "ocr")
+        self.assertEqual(snapshot["invalid_pages"], (0,))
+
     def test_stale_owner_fenced_after_resume(self):
         page = self.root / "page.txt"
         page.write_text("safe")
