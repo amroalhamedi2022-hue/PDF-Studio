@@ -7,6 +7,7 @@ The caller must store the index in application-private storage.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 from contextlib import contextmanager
@@ -136,7 +137,8 @@ class LibraryIndex:
 
     def _commit_pages(self, src: Path, digest: str, count: int,
                       pages: Iterable[tuple[int, str]], provenance: str,
-                      cancel_requested: Callable[[], bool] | None = None) -> IndexResult:
+                      cancel_requested: Callable[[], bool] | None = None,
+                      *, skip_unchanged_native: bool = True) -> IndexResult:
         self._check_cancel(cancel_requested)
         if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= self.max_pages:
             raise LibraryIndexError("page count outside configured index bounds")
@@ -146,7 +148,7 @@ class LibraryIndex:
             previous = db.execute("SELECT * FROM library_documents WHERE source=?", (str(src),)).fetchone()
             # OCR corrections must always be reindexed, even when the source PDF
             # has not changed. Native text can safely reuse an unchanged index.
-            if provenance == "native" and previous and previous["source_sha256"] == digest \
+            if skip_unchanged_native and provenance == "native" and previous and previous["source_sha256"] == digest \
                     and previous["provenance"] == provenance and previous["page_count"] == count \
                     and previous["indexed_pages"] == count:
                 if sha256_file(src) != digest:
@@ -208,6 +210,79 @@ class LibraryIndex:
             raise LibraryIndexError("isolated PDF extraction rejected input: " + str(exc)) from exc
         except Exception as exc:
             raise LibraryIndexError("PDF extraction failed; previous index retained") from exc
+
+    def index_native_text_checkpoints(self, journal: "JobJournal", job_id: str, *,
+                                      cancel_requested: Callable[[], bool] | None = None) -> IndexResult:
+        """Atomically index a *complete* SHA-verified native_text checkpoint stage.
+
+        A local fenced worker lease prevents another journal worker from
+        replacing checkpoints during ingestion. Text is streamed page by page
+        from private artifacts and hashed as read, not trusted from SQLite.
+        This is born-digital text only, never OCR or searchable-PDF creation.
+        """
+        from .bounded_parser import IsolatedPdfReader, ParserIsolationError
+        from .jobs import JobJournal
+
+        if not isinstance(journal, JobJournal):
+            raise TypeError("journal must be a JobJournal")
+        if cancel_requested is not None and not callable(cancel_requested):
+            raise TypeError("cancel_requested must be callable")
+        self._check_cancel(cancel_requested)
+        with journal.worker_session(job_id):
+            job = journal.get_job(job_id)
+            count = job["page_count"]
+            if count > self.max_pages:
+                raise LibraryIndexError("checkpoint page count exceeds index cap")
+            src = self._source(job["source"])
+            with journal._open() as db:
+                rows = db.execute(
+                    "SELECT page_index, artifact, artifact_sha256 FROM checkpoints "
+                    "WHERE job_id=? AND stage='native_text' ORDER BY page_index",
+                    (job_id,),
+                ).fetchall()
+            if len(rows) != count or any(row["page_index"] != i for i, row in enumerate(rows)):
+                raise LibraryIndexError("native text checkpoint stage is incomplete")
+            # Verify the actual PDF page count in a bounded child, rather than
+            # relying solely on user-provided journal metadata.
+            try:
+                with IsolatedPdfReader(
+                    src, max_pages=self.max_pages,
+                    max_chars_per_page=self.max_chars_per_page,
+                    max_total_chars=self.max_total_chars,
+                    extract_text=False,
+                ) as reader:
+                    if reader.page_count != count:
+                        raise LibraryIndexError("checkpoint page count differs from PDF")
+                    list(reader.pages())  # require a clean worker completion
+            except ParserIsolationError as exc:
+                raise LibraryIndexError("cannot verify checkpoint PDF page count") from exc
+
+            def verified_pages() -> Iterator[tuple[int, str]]:
+                byte_cap = self.max_chars_per_page * 4
+                for row in rows:
+                    self._check_cancel(cancel_requested)
+                    try:
+                        with Path(row["artifact"]).open("rb") as stream:
+                            data = stream.read(byte_cap + 1)
+                    except OSError as exc:
+                        raise LibraryIndexError("checkpoint artifact unavailable") from exc
+                    if len(data) > byte_cap:
+                        raise LibraryIndexError("checkpoint artifact exceeds text cap")
+                    if hashlib.sha256(data).hexdigest() != row["artifact_sha256"]:
+                        raise LibraryIndexError("checkpoint artifact checksum mismatch")
+                    try:
+                        text = data.decode("utf-8", errors="strict")
+                    except UnicodeError as exc:
+                        raise LibraryIndexError("checkpoint artifact is not UTF-8") from exc
+                    yield row["page_index"], text
+
+            # Native source SHA alone cannot identify a corrected/rebuilt page
+            # artifact. Always consume/check all checkpoints before replacing
+            # the previous FTS transaction; never use the unchanged-PDF shortcut.
+            return self._commit_pages(
+                src, job["input_sha256"], count, verified_pages(), "native",
+                cancel_requested, skip_unchanged_native=False,
+            )
 
     def index_ocr_text(self, source: str | Path, page_count: int,
                        pages: Iterable[tuple[int, str]], *, expected_sha256: str,
