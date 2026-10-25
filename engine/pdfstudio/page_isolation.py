@@ -1,7 +1,7 @@
-"""Resource-bounded POSIX worker for PDF page extraction and merge.
+"""Resource-bounded PDF page worker on POSIX and Windows.
 
-Not a security sandbox: process retains caller filesystem privileges. Windows
-fails closed until Job Object confinement is implemented. Never logs PDF text.
+POSIX RLIMIT or Windows Job Object limits apply before PDF parsing. This is
+NOT a security sandbox: workers retain caller filesystem privileges.
 """
 from __future__ import annotations
 
@@ -13,15 +13,21 @@ import time
 from pathlib import Path
 
 from .jobs import sha256_file
+from .windows_job import WindowsJob, WindowsJobError
 
 
-def _worker(pipe, action, sources, output, selection, digests, memory_bytes, cpu_seconds, max_pages):
+def _worker(pipe, gate, action, sources, output, selection, digests, memory_bytes, cpu_seconds, max_pages):
     try:
-        import resource
-        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
+        if os.name == "nt":
+            # Parent assigns the Job Object before releasing this gate.
+            if gate is None or not gate.wait(15):
+                return
+        else:
+            import resource
+            resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+            resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+            resource.setrlimit(resource.RLIMIT_FSIZE, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
         import logging
         logging.getLogger("pypdf").setLevel(logging.CRITICAL)
         from .page_tools import _extract_pages_direct, _merge_pdfs_direct, PageToolError
@@ -57,14 +63,15 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                        timeout_seconds: float = 90.0, max_memory_mb: int = 768,
                        max_pages: int = 10000) -> Path:
     from .page_tools import PageToolError, _validated_output, _validated_source
-    if os.name != "posix":
+    if os.name not in ("posix", "nt"):
         raise PageToolError("isolated page tools unavailable on this host")
-    try:
-        import resource
-        if any(not hasattr(resource, name) for name in ("RLIMIT_AS", "RLIMIT_CPU", "RLIMIT_FSIZE")):
-            raise ImportError("resource limits unavailable")
-    except ImportError as exc:
-        raise PageToolError("OS resource limits unavailable") from exc
+    if os.name == "posix":
+        try:
+            import resource
+            if any(not hasattr(resource, name) for name in ("RLIMIT_AS", "RLIMIT_CPU", "RLIMIT_FSIZE")):
+                raise ImportError("resource limits unavailable")
+        except ImportError as exc:
+            raise PageToolError("OS resource limits unavailable") from exc
     if action not in ("extract", "merge"):
         raise ValueError("unsupported operation")
     for key, value in (("max_memory_mb", max_memory_mb), ("max_pages", max_pages)):
@@ -88,13 +95,27 @@ def run_page_operation(action: str, sources, output, selection=None, *,
         staged = Path(stage_dir) / "result.pdf"
         ctx = mp.get_context("spawn")
         parent, child = ctx.Pipe(duplex=False)
-        proc = ctx.Process(target=_worker, args=(child, action, tuple(map(str, resolved)),
+        gate = ctx.Event() if os.name == "nt" else None
+        try:
+            job = WindowsJob(max_memory_mb * 1024 * 1024) if os.name == "nt" else None
+        except WindowsJobError as exc:
+            child.close()
+            parent.close()
+            raise PageToolError("Windows worker limits unavailable") from exc
+        proc = ctx.Process(target=_worker, args=(child, gate, action, tuple(map(str, resolved)),
                            str(staged), selection, digests,
                            max_memory_mb * 1024 * 1024, max(2, math.ceil(timeout_seconds) + 1),
                            max_pages), daemon=True)
         try:
             proc.start()
             child.close()
+            if job is not None:
+                try:
+                    job.assign(proc.pid)
+                except WindowsJobError as exc:
+                    raise PageToolError("Windows worker could not be confined") from exc
+                gate.set()
+            deadline = time.monotonic() + timeout_seconds
             if not parent.poll(timeout_seconds):
                 raise PageToolError("isolated page operation timed out")
             try:
@@ -105,6 +126,11 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                 raise FileExistsError("output already exists")
             if response != ("ok",):
                 raise PageToolError("isolated page operation rejected input or exceeded limits")
+            # A worker may acknowledge and then hang/crash or mutate the staging
+            # inode. Never publish until the worker has fully exited cleanly.
+            proc.join(timeout=max(0.0, deadline - time.monotonic()))
+            if proc.is_alive() or proc.exitcode != 0:
+                raise PageToolError("isolated page worker did not exit cleanly")
             if not staged.is_file() or staged.stat().st_size == 0:
                 raise PageToolError("isolated page operation did not stage a PDF")
             if any(sha256_file(p) != digest for p, digest in zip(resolved, digests)):
@@ -124,3 +150,5 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                         proc.kill()
                 proc.join(timeout=1)
             proc.close()
+            if job is not None:
+                job.close()
