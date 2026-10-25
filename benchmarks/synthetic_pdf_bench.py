@@ -93,15 +93,27 @@ def run_benchmark(pages: int, chars_per_page: int, timeout_seconds: float,
             artifacts = Path(temp) / "checkpoint-artifacts"
             total_chars_cap = max(20_000_000, pages * (chars_per_page + 64))
 
+            interrupted_page_count = max(1, pages // 2)
+            cancel_checks = 0
+
+            def cancel_after_half():
+                nonlocal cancel_checks
+                cancel_checks += 1
+                # One preflight poll plus one poll before each page is published.
+                return cancel_checks >= interrupted_page_count + 2
+
             started = time.perf_counter()
             first_stage = run_native_text_stage(
                 journal, job_id, artifacts, max_pages=pages,
                 max_chars_per_page=max(500000, chars_per_page + 64),
                 max_total_chars=total_chars_cap, timeout_seconds=timeout_seconds,
+                cancel_requested=cancel_after_half,
             )
             checkpoint_stage_seconds = time.perf_counter() - started
-            if first_stage["cancelled"] or len(first_stage["processed"]) != pages:
-                raise AssertionError("checkpoint stage did not process every synthetic page")
+            if (not first_stage["cancelled"]
+                    or len(first_stage["processed"]) != interrupted_page_count
+                    or journal.get_job(job_id)["state"] != "paused"):
+                raise AssertionError("synthetic stage did not pause after the expected page count")
 
             started = time.perf_counter()
             resumed_stage = run_native_text_stage(
@@ -110,9 +122,21 @@ def run_benchmark(pages: int, chars_per_page: int, timeout_seconds: float,
                 max_total_chars=total_chars_cap, timeout_seconds=timeout_seconds,
             )
             checkpoint_resume_seconds = time.perf_counter() - started
-            if (resumed_stage["cancelled"] or resumed_stage["processed"]
-                    or len(resumed_stage["skipped"]) != pages):
-                raise AssertionError("resume did not reuse every verified page checkpoint")
+            if (resumed_stage["cancelled"]
+                    or len(resumed_stage["processed"]) != pages - interrupted_page_count
+                    or len(resumed_stage["skipped"]) != interrupted_page_count):
+                raise AssertionError("resume did not process only the missing synthetic pages")
+
+            started = time.perf_counter()
+            reused_stage = run_native_text_stage(
+                journal, job_id, artifacts, max_pages=pages,
+                max_chars_per_page=max(500000, chars_per_page + 64),
+                max_total_chars=total_chars_cap, timeout_seconds=timeout_seconds,
+            )
+            checkpoint_reuse_seconds = time.perf_counter() - started
+            if (reused_stage["cancelled"] or reused_stage["processed"]
+                    or len(reused_stage["skipped"]) != pages):
+                raise AssertionError("completed stage did not reuse all verified checkpoints")
             snapshot = journal.recovery_snapshot(job_id, "native_text")
             if len(snapshot["valid_pages"]) != pages or snapshot["invalid_pages"] or snapshot["missing_pages"]:
                 raise AssertionError("checkpoint audit found missing or invalid artifacts")
@@ -133,11 +157,15 @@ def run_benchmark(pages: int, chars_per_page: int, timeout_seconds: float,
             if sha256_file(pdf) != digest:
                 raise AssertionError("checkpoint/resume changed the original PDF")
             checkpoint_metrics = {
-                "checkpoint_stage_seconds": round(checkpoint_stage_seconds, 3),
+                "checkpoint_interruption_seconds": round(checkpoint_stage_seconds, 3),
                 "checkpoint_resume_seconds": round(checkpoint_resume_seconds, 3),
+                "checkpoint_reuse_seconds": round(checkpoint_reuse_seconds, 3),
                 "checkpoint_index_seconds": round(checkpoint_index_seconds, 3),
                 "checkpoint_artifacts": len(snapshot["valid_pages"]),
-                "checkpoint_resumed_pages": len(resumed_stage["skipped"]),
+                "checkpoint_interrupted_pages": len(first_stage["processed"]),
+                "checkpoint_resumed_pages": len(resumed_stage["processed"]),
+                "checkpoint_skipped_verified_pages": len(resumed_stage["skipped"]),
+                "checkpoint_reuse_verified_pages": len(reused_stage["skipped"]),
                 "checkpoint_indexed_pages": checkpoint_index_result.indexed_pages,
                 "checkpoint_index_bytes": (Path(temp) / "checkpoint-index.sqlite").stat().st_size,
                 "checkpoint_artifact_bytes": sum(p.stat().st_size for p in artifacts.glob("page-*.txt")),
