@@ -154,6 +154,43 @@ class JobJournal:
                 artifact=excluded.artifact, artifact_sha256=excluded.artifact_sha256""",
                 (job_id, page_index, stage, str(file), digest))
 
+
+    def recovery_snapshot(self, job_id: str, stage: str) -> dict:
+        """Read-only post-interruption audit; NEVER starts or claims a worker lease.
+
+        An interrupted 'running' row may belong to a *live* process. Callers
+        must independently stop/join that worker before any state transition.
+        Checkpoint files are rehashed, not trusted from SQLite alone.
+        """
+        if stage not in STAGES:
+            raise ValueError("unsupported stage")
+        self.verify_source(job_id)
+        with self._open() as db:
+            job = db.execute("SELECT state, page_count FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+            if job is None:
+                raise KeyError(job_id)
+            rows = db.execute(
+                "SELECT page_index, artifact, artifact_sha256 FROM checkpoints "
+                "WHERE job_id=? AND stage=? ORDER BY page_index", (job_id, stage)
+            ).fetchall()
+            state, page_count = job["state"], job["page_count"]
+        valid, invalid = [], []
+        for row in rows:
+            try:
+                matched = sha256_file(row["artifact"]) == row["artifact_sha256"]
+            except OSError:
+                matched = False
+            (valid if matched else invalid).append(row["page_index"])
+        self.verify_source(job_id)  # reject source replacement during the audit
+        verified = set(valid)
+        return {
+            "job_id": job_id, "stage": stage, "state": state,
+            "valid_pages": tuple(valid), "invalid_pages": tuple(invalid),
+            "missing_pages": tuple(i for i in range(page_count) if i not in verified),
+            "requires_worker_quiescence": state == "running",
+            "resume_authorized": False,
+        }
+
     def resumable_pages(self, job_id: str, stage: str) -> list[int]:
         """Return only pages with verified artifacts at this pipeline stage."""
         if stage not in STAGES:

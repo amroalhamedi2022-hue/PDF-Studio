@@ -77,6 +77,46 @@ class JournalTests(unittest.TestCase):
         artifact.unlink()
         self.assertEqual(self.journal.resumable_pages(job, "prepared"), [])
 
+    def test_interrupted_recovery_audit_survives_restart_and_detects_damage(self):
+        job = self.journal.create_job(self.original, self.output, 4)
+        self.journal.set_state(job, "running")
+        good = self.root / "good.txt"
+        damaged = self.root / "damaged.txt"
+        good.write_text("page zero")
+        damaged.write_text("page one")
+        self.journal.checkpoint(job, 0, "ocr", good)
+        self.journal.checkpoint(job, 1, "ocr", damaged)
+        damaged.write_text("corrupted after checkpoint")
+        reopened = JobJournal(self.root / "jobs.sqlite")
+        audit = reopened.recovery_snapshot(job, "ocr")
+        self.assertEqual(audit["state"], "running")
+        self.assertEqual(audit["valid_pages"], (0,))
+        self.assertEqual(audit["invalid_pages"], (1,))
+        self.assertEqual(audit["missing_pages"], (1, 2, 3))
+        self.assertTrue(audit["requires_worker_quiescence"])
+        self.assertFalse(audit["resume_authorized"])
+        self.assertEqual(reopened.get_job(job)["state"], "running")
+        with self.assertRaises(JobSafetyError):
+            reopened.set_state(job, "running")  # no silent concurrent worker resume
+        good.unlink()
+        self.assertEqual(reopened.recovery_snapshot(job, "ocr")["invalid_pages"], (0, 1))
+        self.original.write_bytes(self.original.read_bytes() + b"changed")
+        with self.assertRaises(SourceChangedError):
+            reopened.recovery_snapshot(job, "ocr")
+
+    def test_recovery_audit_is_read_only_for_paused_jobs(self):
+        job = self.journal.create_job(self.original, self.output, 2)
+        self.journal.set_state(job, "running")
+        self.journal.set_state(job, "paused")
+        audit = JobJournal(self.root / "jobs.sqlite").recovery_snapshot(job, "prepared")
+        self.assertEqual(audit["valid_pages"], ())
+        self.assertEqual(audit["missing_pages"], (0, 1))
+        self.assertFalse(audit["requires_worker_quiescence"])
+        self.assertFalse(audit["resume_authorized"])
+        self.assertEqual(self.journal.get_job(job)["state"], "paused")
+        with self.assertRaises(ValueError):
+            self.journal.recovery_snapshot(job, "bad-stage")
+
     def test_arabic_normalization_for_index_only(self):
         self.assertEqual(normalize_arabic_search("  إِلَى  المُدَرِّسِ  "), "الي المدرس")
         self.assertEqual(normalize_arabic_search("آثار ـ وثيقة"), "اثار وثيقة")

@@ -118,3 +118,15 @@ Implement page ranges, metadata browser, safe file IO, and parser-isolation limi
 **Remaining / NOT TESTED:** full crash/reboot resume and cancellation inside a blocked parser call; 10/100/1000/5000-page timed memory/disk benchmark; Android SAF/device and Windows EXE; genuine Arabic/English OCR and searchable PDF; full F01–F10 acceptance. No APK/EXE was built because this change is exercised by cross-platform source CI. No new dependency, private document, paid runner, merge or main edit. SQLite rollback design reviewed against https://www.sqlite.org/lang_transaction.html and Python sqlite3 transaction documentation; no third-party code copied.
 
 **Next:** continue the same B01 milestone with synthetic 100/1000-page benchmark evidence and interrupted-job checkpoint recovery (with explicit protection against concurrent live workers), then verify real-platform adapters. Keep PR #2 draft and B01 OPEN.
+
+## B01 same milestone — read-only interrupted-job audit + synthetic scale instrumentation (2026-10-25)
+
+**Acceptance slice:** after a process interruption, a fresh Journal instance must report which page-stage checkpoints are SHA-verified, missing or damaged, without mutating job state, trusting unverified artifacts, or automatically resuming a possibly still-live worker. This is **not** crash-safe automatic resumption: an explicit worker ownership/quiescence protocol remains required before re-running a 'running' job.
+
+**Production:** `JobJournal.recovery_snapshot(job_id, stage)` verifies the source before and after inspection, rehashes every checkpoint artifact, and reports valid/invalid/missing page indexes, journal state, and a live-worker warning. It never transitions a job or authorizes resume. Two tests exercise restart, tampering, missing artifacts, changed source and paused-state read-only behavior.
+
+**Scale instrumentation:** `benchmarks/synthetic_pdf_bench.py` creates deterministic born-digital PDFs with real extractable text, runs bounded inspection and SQLite FTS indexing, verifies the original SHA and FTS integrity, and prints JSON timings, file sizes and POSIX parent/max-child RSS high-water marks. Free CI now runs 100-page smoke on both hosts and 1000-page smoke on Linux. The generated corpus is small/simple and is **not** evidence for realistic 2GB PDFs, OCR, 5000 pages, adversarial inputs, Android or Windows EXE. Windows RSS is reported null, not guessed.
+
+**CI status:** pending verification for the commit introducing this slice. No APK/EXE was needed: these are Python source and hosted Windows/POSIX behavior checks. Do not claim PASS until both CI jobs and benchmark output are reviewed. B01 remains OPEN; next step is real measured limits and safe worker-ownership protocol for automatic resume.
+
+**Research:** uses existing BSD-3-Clause pypdf, SQLite and Python stdlib resource/getrusage APIs, no new dependencies or copied third-party code.
