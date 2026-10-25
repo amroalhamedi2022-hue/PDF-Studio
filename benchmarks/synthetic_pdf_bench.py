@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing as mp
 import os
 import sys
 import tempfile
@@ -49,6 +50,33 @@ def _rss_mb(who: int) -> float | None:
     import resource
     rss = resource.getrusage(who).ru_maxrss
     return round(rss / (1024 * 1024 if sys.platform == "darwin" else 1024), 2)
+
+
+def _crash_during_native_text_stage(
+    database: str, job_id: str, artifact_directory: str, checkpoint_count: int,
+    max_pages: int, max_chars_per_page: int, max_total_chars: int,
+    timeout_seconds: float,
+) -> None:
+    """Abruptly terminate the stage parent after durable per-page checkpoints."""
+    from pdfstudio.jobs import JobJournal
+    from pdfstudio.native_text_stage import run_native_text_stage
+
+    polls = 0
+
+    def terminate_after_checkpoint_count() -> bool:
+        nonlocal polls
+        polls += 1
+        # One preflight poll plus one poll before each page is published.
+        if polls >= checkpoint_count + 2:
+            os._exit(23)
+        return False
+
+    run_native_text_stage(
+        JobJournal(database), job_id, artifact_directory,
+        max_pages=max_pages, max_chars_per_page=max_chars_per_page,
+        max_total_chars=max_total_chars, timeout_seconds=timeout_seconds,
+        cancel_requested=terminate_after_checkpoint_count,
+    )
 
 
 def run_benchmark(pages: int, chars_per_page: int, timeout_seconds: float,
@@ -94,26 +122,34 @@ def run_benchmark(pages: int, chars_per_page: int, timeout_seconds: float,
             total_chars_cap = max(20_000_000, pages * (chars_per_page + 64))
 
             interrupted_page_count = max(1, pages // 2)
-            cancel_checks = 0
-
-            def cancel_after_half():
-                nonlocal cancel_checks
-                cancel_checks += 1
-                # One preflight poll plus one poll before each page is published.
-                return cancel_checks >= interrupted_page_count + 2
-
             started = time.perf_counter()
-            first_stage = run_native_text_stage(
-                journal, job_id, artifacts, max_pages=pages,
-                max_chars_per_page=max(500000, chars_per_page + 64),
-                max_total_chars=total_chars_cap, timeout_seconds=timeout_seconds,
-                cancel_requested=cancel_after_half,
+            process = mp.get_context("spawn").Process(
+                target=_crash_during_native_text_stage,
+                args=(
+                    str(journal.database), job_id, str(artifacts), interrupted_page_count,
+                    pages, max(500000, chars_per_page + 64), total_chars_cap,
+                    timeout_seconds,
+                ),
             )
+            process.start()
+            process.join(timeout_seconds + 60)
+            if process.is_alive():
+                process.kill()
+                process.join()
+                raise AssertionError("synthetic stage parent did not crash within the timeout")
             checkpoint_stage_seconds = time.perf_counter() - started
-            if (not first_stage["cancelled"]
-                    or len(first_stage["processed"]) != interrupted_page_count
-                    or journal.get_job(job_id)["state"] != "paused"):
-                raise AssertionError("synthetic stage did not pause after the expected page count")
+            if process.exitcode != 23 or journal.get_job(job_id)["state"] != "running":
+                raise AssertionError("stage parent did not terminate abruptly at the intended checkpoint")
+
+            after_crash = journal.recovery_snapshot(job_id, "native_text")
+            expected_durable = tuple(range(interrupted_page_count))
+            expected_missing = tuple(range(interrupted_page_count, pages))
+            if (after_crash["valid_pages"] != expected_durable
+                    or after_crash["invalid_pages"]
+                    or after_crash["missing_pages"] != expected_missing
+                    or not after_crash["requires_worker_quiescence"]
+                    or after_crash["resume_authorized"]):
+                raise AssertionError("crash recovery snapshot did not match durable checkpoints")
 
             started = time.perf_counter()
             resumed_stage = run_native_text_stage(
@@ -162,7 +198,8 @@ def run_benchmark(pages: int, chars_per_page: int, timeout_seconds: float,
                 "checkpoint_reuse_seconds": round(checkpoint_reuse_seconds, 3),
                 "checkpoint_index_seconds": round(checkpoint_index_seconds, 3),
                 "checkpoint_artifacts": len(snapshot["valid_pages"]),
-                "checkpoint_interrupted_pages": len(first_stage["processed"]),
+                "checkpoint_crash_exit_code": process.exitcode,
+                "checkpoint_interrupted_pages": len(after_crash["valid_pages"]),
                 "checkpoint_resumed_pages": len(resumed_stage["processed"]),
                 "checkpoint_skipped_verified_pages": len(resumed_stage["skipped"]),
                 "checkpoint_reuse_verified_pages": len(reused_stage["skipped"]),
