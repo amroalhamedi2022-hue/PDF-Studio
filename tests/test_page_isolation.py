@@ -10,7 +10,7 @@ from pdfstudio.page_tools import PageToolError, extract_pages, merge_pdfs
 from pdfstudio.jobs import sha256_file
 
 
-@unittest.skipUnless(os.name == "posix", "POSIX RLIMIT worker required")
+@unittest.skipUnless(os.name in ("posix", "nt"), "bounded POSIX or Windows worker required")
 class IsolatedPageToolTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
