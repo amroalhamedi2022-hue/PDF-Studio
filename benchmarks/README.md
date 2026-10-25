@@ -5,5 +5,9 @@ Track CER/WER for Arabic, English and mixed documents; page counts, hashes, peak
 Fixture tiers: 10/100/1000/5000 pages and >=2 GB when test hardware permits. Never label a tier PASS until it was actually measured.
 
 
-### Reproducible B01 synthetic scale check
-Run from repository root with `PYTHONPATH=engine python benchmarks/synthetic_pdf_bench.py --pages 100` (Linux/macOS) or set `PYTHONPATH=engine` on Windows. Repeat with `--pages 1000`. JSON includes generated PDF size, SQLite index size, generation/inspection/indexing seconds, source-integrity/FTS checks and POSIX process high-water RSS. The max-child RSS is **not** combined process RSS; Windows RSS is unavailable. These tiny born-digital synthetic files are **not** 2GB/OCR/hostile-file benchmarks. CI runs 100 pages on both OSes and 1000 on Linux. No user's files are included.
+### Reproducible B01 synthetic scale checks
+Run from repository root with `PYTHONPATH=engine python benchmarks/synthetic_pdf_bench.py --pages 100` (Linux/macOS) or set `PYTHONPATH=engine` on Windows. CI runs 100 pages on both OSes and 1000 pages on Linux.
+
+For the full checkpoint path, run `PYTHONPATH=engine python benchmarks/synthetic_pdf_bench.py --pages 5000 --chars-per-page 256 --timeout-seconds 300 --checkpoint-resume`. The extra flag runs the real bounded native-text stage, writes SHA-verified immutable page artifacts to SQLite checkpoints, reruns to prove all 5000 pages are skipped on resume, then ingests those artifacts into a separate FTS5 index and checks search/FTS integrity and source SHA. JSON records generation, inspection, indexing, first-stage, resume and checkpoint-index timings; PDF/SQLite/artifact sizes; and POSIX process high-water RSS. The max-child RSS is **not** combined process RSS; Windows RSS is unavailable.
+
+These are reproducible **born-digital synthetic** tests. Even a PASS at 5000 pages does **not** establish OCR quality, hostile-file sandboxing, a realistic 2GB-file result, Android/Windows UI behavior, or device acceptance. No user's files are included.
