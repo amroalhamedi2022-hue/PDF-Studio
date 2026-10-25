@@ -155,8 +155,8 @@ class LibraryIndexTests(unittest.TestCase):
         def cancel_after_first_page():
             nonlocal calls
             calls += 1
-            # Start check, page zero check, then cancel at page one.
-            return calls >= 3
+            # API entry, transaction entry, page zero, then page one.
+            return calls >= 4
 
         with self.assertRaises(LibraryIndexCancelled):
             self.index.index_ocr_text(
@@ -176,8 +176,8 @@ class LibraryIndexTests(unittest.TestCase):
         def cancel_at_commit():
             nonlocal calls
             calls += 1
-            # Before start, before page insertion, immediately before commit.
-            return calls >= 3
+            # API entry, transaction entry, page insertion, pre-commit.
+            return calls >= 4
 
         with self.assertRaises(LibraryIndexCancelled):
             self.index.index_ocr_text(
