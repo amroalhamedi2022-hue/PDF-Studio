@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 from .jobs import SourceChangedError, sha256_file
 from .search import normalize_arabic_search
@@ -23,6 +23,10 @@ _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
 
 class LibraryIndexError(ValueError):
     """Indexing failed; any previous index remains intact."""
+
+
+class LibraryIndexCancelled(LibraryIndexError):
+    """Cooperative cancellation; all uncommitted FTS rows are rolled back."""
 
 
 @dataclass(frozen=True)
@@ -125,8 +129,15 @@ class LibraryIndex:
                 raise LibraryIndexError("missing PDF header")
         return src
 
+    @staticmethod
+    def _check_cancel(cancel_requested: Callable[[], bool] | None) -> None:
+        if cancel_requested is not None and cancel_requested():
+            raise LibraryIndexCancelled("indexing cancelled; previous index retained")
+
     def _commit_pages(self, src: Path, digest: str, count: int,
-                      pages: Iterable[tuple[int, str]], provenance: str) -> IndexResult:
+                      pages: Iterable[tuple[int, str]], provenance: str,
+                      cancel_requested: Callable[[], bool] | None = None) -> IndexResult:
+        self._check_cancel(cancel_requested)
         if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= self.max_pages:
             raise LibraryIndexError("page count outside configured index bounds")
         total = 0
@@ -140,6 +151,7 @@ class LibraryIndex:
                     and previous["indexed_pages"] == count:
                 if sha256_file(src) != digest:
                     raise SourceChangedError("source PDF changed during indexing")
+                self._check_cancel(cancel_requested)
                 return IndexResult(str(src), digest, count, count, False, provenance)
             if previous:
                 db.execute("DELETE FROM library_pages WHERE document_id=?", (previous["id"],))
@@ -156,6 +168,7 @@ class LibraryIndex:
                      datetime.now(timezone.utc).isoformat()))
                 doc_id = cur.lastrowid
             for index, text in pages:
+                self._check_cancel(cancel_requested)
                 if not isinstance(index, int) or isinstance(index, bool) or index < 0 or index >= count or index in seen:
                     raise LibraryIndexError("invalid or repeated page index")
                 if not isinstance(text, str):
@@ -171,10 +184,15 @@ class LibraryIndex:
             if sha256_file(src) != digest:
                 raise SourceChangedError("source PDF changed during indexing")
             db.execute("UPDATE library_documents SET indexed_pages=? WHERE id=?", (len(seen), doc_id))
+            self._check_cancel(cancel_requested)  # still inside the transaction
             return IndexResult(str(src), digest, count, len(seen), True, provenance)
 
-    def index_pdf(self, source: str | Path) -> IndexResult:
-        """Index native text in a resource-limited POSIX or Windows child."""
+    def index_pdf(self, source: str | Path, *,
+                  cancel_requested: Callable[[], bool] | None = None) -> IndexResult:
+        """Index native text in a bounded child; cancellation rolls back FTS."""
+        if cancel_requested is not None and not callable(cancel_requested):
+            raise TypeError("cancel_requested must be callable")
+        self._check_cancel(cancel_requested)
         from .bounded_parser import IsolatedPdfReader, ParserIsolationError
         src = self._source(source)
         digest = sha256_file(src)
@@ -183,7 +201,7 @@ class LibraryIndex:
                                    max_chars_per_page=self.max_chars_per_page,
                                    max_total_chars=self.max_total_chars) as reader:
                 return self._commit_pages(src, digest, reader.page_count,
-                                          reader.pages(), "native")
+                                          reader.pages(), "native", cancel_requested)
         except (LibraryIndexError, SourceChangedError):
             raise
         except ParserIsolationError as exc:
@@ -192,8 +210,12 @@ class LibraryIndex:
             raise LibraryIndexError("PDF extraction failed; previous index retained") from exc
 
     def index_ocr_text(self, source: str | Path, page_count: int,
-                       pages: Iterable[tuple[int, str]], *, expected_sha256: str) -> IndexResult:
-        """Ingest trusted OCR text after isolated verification of source page count."""
+                       pages: Iterable[tuple[int, str]], *, expected_sha256: str,
+                       cancel_requested: Callable[[], bool] | None = None) -> IndexResult:
+        """Ingest trusted OCR text after bounded source page-count verification."""
+        if cancel_requested is not None and not callable(cancel_requested):
+            raise TypeError("cancel_requested must be callable")
+        self._check_cancel(cancel_requested)
         from .bounded_parser import IsolatedPdfReader, ParserIsolationError
         src = self._source(source)
         digest = sha256_file(src)
@@ -212,7 +234,7 @@ class LibraryIndex:
             raise LibraryIndexError("cannot verify OCR page count") from exc
         if actual_pages != page_count:
             raise LibraryIndexError("OCR page count differs from the source PDF")
-        return self._commit_pages(src, digest, page_count, pages, "ocr")
+        return self._commit_pages(src, digest, page_count, pages, "ocr", cancel_requested)
 
     def search(self, query: str, *, limit: int = 25) -> list[SearchHit]:
         """Match all normalized terms; user cannot inject raw FTS syntax."""
