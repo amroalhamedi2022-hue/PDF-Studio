@@ -4,8 +4,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pdfstudio.inspection import DocumentInspectionError, inspect_pdf
+from pdfstudio.windows_job import WindowsJobError
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
@@ -74,12 +76,21 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual(inspect_pdf(self.path, sample_limit=0).sampled_pages, ())
         self.assertEqual(len(inspect_pdf(self.path, sample_limit=1).sampled_pages), 1)
 
-    @unittest.skipUnless(os.name == "posix", "POSIX worker limits required")
+    @unittest.skipUnless(os.name in ("posix", "nt"), "OS worker limits required")
     def test_isolated_timeout_fails_closed_and_preserves_input(self):
         self.write_pdf(with_text=True)
         original = self.path.read_bytes()
         with self.assertRaises(DocumentInspectionError):
             inspect_pdf(self.path, timeout_seconds=0.000001)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows Job Object required')
+    def test_windows_job_assignment_failure_fails_closed(self):
+        self.write_pdf()
+        original = self.path.read_bytes()
+        with patch('pdfstudio.inspection.WindowsJob.assign', side_effect=WindowsJobError('denied')):
+            with self.assertRaises(DocumentInspectionError):
+                inspect_pdf(self.path)
         self.assertEqual(self.path.read_bytes(), original)
 
     def test_invalid_isolation_limits_fail_before_parsing(self):
@@ -89,7 +100,7 @@ class InspectionTests(unittest.TestCase):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 inspect_pdf(self.path, **kwargs)
 
-    @unittest.skipUnless(os.name == "posix", "POSIX worker limits required")
+    @unittest.skipUnless(os.name in ("posix", "nt"), "OS worker limits required")
     def test_page_count_limit_and_original_integrity(self):
         self.write_pdf()
         before = self.path.read_bytes()
@@ -97,7 +108,7 @@ class InspectionTests(unittest.TestCase):
             inspect_pdf(self.path, max_pages=1)
         self.assertEqual(self.path.read_bytes(), before)
 
-    @unittest.skipUnless(os.name == "posix", "POSIX worker limits required")
+    @unittest.skipUnless(os.name in ("posix", "nt"), "OS worker limits required")
     def test_isolated_metadata_and_password_never_logged(self):
         self.write_pdf(password="private-test-password")
         info = inspect_pdf(self.path, password="private-test-password")
