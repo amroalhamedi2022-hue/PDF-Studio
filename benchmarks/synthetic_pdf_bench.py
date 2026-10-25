@@ -51,10 +51,12 @@ def _rss_mb(who: int) -> float | None:
     return round(rss / (1024 * 1024 if sys.platform == "darwin" else 1024), 2)
 
 
-def run_benchmark(pages: int, chars_per_page: int, timeout_seconds: float) -> dict:
+def run_benchmark(pages: int, chars_per_page: int, timeout_seconds: float,
+                  checkpoint_resume: bool = False) -> dict:
     from pdfstudio.inspection import inspect_pdf
-    from pdfstudio.jobs import sha256_file
+    from pdfstudio.jobs import JobJournal, sha256_file
     from pdfstudio.library_index import LibraryIndex
+    from pdfstudio.native_text_stage import run_native_text_stage
 
     with tempfile.TemporaryDirectory(prefix="pdfstudio-bench-") as temp:
         pdf = Path(temp) / "synthetic.pdf"
@@ -80,6 +82,68 @@ def run_benchmark(pages: int, chars_per_page: int, timeout_seconds: float) -> di
         index.integrity_check()
         if sha256_file(pdf) != digest:
             raise AssertionError("original PDF changed")
+
+        checkpoint_metrics = {}
+        if checkpoint_resume:
+            # Exercise the real SQLite journal, bounded native-text parser,
+            # immutable per-page artifacts, resume verification and FTS bridge.
+            # This is deliberately born-digital synthetic data, not OCR or 2GB.
+            journal = JobJournal(Path(temp) / "jobs.sqlite")
+            job_id = journal.create_job(pdf, Path(temp) / "checkpoint-output.pdf", pages)
+            artifacts = Path(temp) / "checkpoint-artifacts"
+            total_chars_cap = max(20_000_000, pages * (chars_per_page + 64))
+
+            started = time.perf_counter()
+            first_stage = run_native_text_stage(
+                journal, job_id, artifacts, max_pages=pages,
+                max_chars_per_page=max(500000, chars_per_page + 64),
+                max_total_chars=total_chars_cap, timeout_seconds=timeout_seconds,
+            )
+            checkpoint_stage_seconds = time.perf_counter() - started
+            if first_stage["cancelled"] or len(first_stage["processed"]) != pages:
+                raise AssertionError("checkpoint stage did not process every synthetic page")
+
+            started = time.perf_counter()
+            resumed_stage = run_native_text_stage(
+                journal, job_id, artifacts, max_pages=pages,
+                max_chars_per_page=max(500000, chars_per_page + 64),
+                max_total_chars=total_chars_cap, timeout_seconds=timeout_seconds,
+            )
+            checkpoint_resume_seconds = time.perf_counter() - started
+            if (resumed_stage["cancelled"] or resumed_stage["processed"]
+                    or len(resumed_stage["skipped"]) != pages):
+                raise AssertionError("resume did not reuse every verified page checkpoint")
+            snapshot = journal.recovery_snapshot(job_id, "native_text")
+            if len(snapshot["valid_pages"]) != pages or snapshot["invalid_pages"] or snapshot["missing_pages"]:
+                raise AssertionError("checkpoint audit found missing or invalid artifacts")
+
+            checkpoint_index = LibraryIndex(
+                Path(temp) / "checkpoint-index.sqlite", max_pages=pages,
+                max_chars_per_page=max(500000, chars_per_page + 64),
+                max_total_chars=total_chars_cap,
+            )
+            started = time.perf_counter()
+            checkpoint_index_result = checkpoint_index.index_native_text_checkpoints(journal, job_id)
+            checkpoint_index_seconds = time.perf_counter() - started
+            checkpoint_index.integrity_check()
+            if checkpoint_index_result.indexed_pages != pages:
+                raise AssertionError("checkpoint FTS bridge did not index every page")
+            if len(checkpoint_index.search("pdfstudio", limit=10)) != min(pages, 10):
+                raise AssertionError("checkpoint FTS search missed synthetic page text")
+            if sha256_file(pdf) != digest:
+                raise AssertionError("checkpoint/resume changed the original PDF")
+            checkpoint_metrics = {
+                "checkpoint_stage_seconds": round(checkpoint_stage_seconds, 3),
+                "checkpoint_resume_seconds": round(checkpoint_resume_seconds, 3),
+                "checkpoint_index_seconds": round(checkpoint_index_seconds, 3),
+                "checkpoint_artifacts": len(snapshot["valid_pages"]),
+                "checkpoint_resumed_pages": len(resumed_stage["skipped"]),
+                "checkpoint_indexed_pages": checkpoint_index_result.indexed_pages,
+                "checkpoint_index_bytes": (Path(temp) / "checkpoint-index.sqlite").stat().st_size,
+                "checkpoint_artifact_bytes": sum(p.stat().st_size for p in artifacts.glob("page-*.txt")),
+                "checkpoint_resume_verified": True,
+                "checkpoint_source_unchanged": True,
+            }
         if os.name == "posix":
             import resource
             parent_rss = _rss_mb(resource.RUSAGE_SELF)
@@ -96,6 +160,7 @@ def run_benchmark(pages: int, chars_per_page: int, timeout_seconds: float) -> di
             "rss_scope": "POSIX process high-water marks; max child, not sum; unavailable on Windows",
             "pdf_unchanged": True, "fts_integrity": "PASS", "indexed_pages": result.indexed_pages,
             "limitations": "synthetic native text only; not OCR, 2GB, hostile PDF, Android, or GUI benchmark",
+            **checkpoint_metrics,
         }
 
 
@@ -104,10 +169,15 @@ def main() -> None:
     parser.add_argument("--pages", type=int, default=100)
     parser.add_argument("--chars-per-page", type=int, default=256)
     parser.add_argument("--timeout-seconds", type=float, default=180.0)
+    parser.add_argument("--checkpoint-resume", action="store_true",
+                        help="also benchmark real per-page SQLite checkpointing, resume, and checkpoint-to-FTS indexing")
     args = parser.parse_args()
     if args.timeout_seconds <= 0:
         parser.error("timeout must be positive")
-    print(json.dumps(run_benchmark(args.pages, args.chars_per_page, args.timeout_seconds), sort_keys=True))
+    print(json.dumps(run_benchmark(
+        args.pages, args.chars_per_page, args.timeout_seconds,
+        checkpoint_resume=args.checkpoint_resume,
+    ), sort_keys=True))
 
 
 if __name__ == "__main__":
