@@ -50,13 +50,19 @@ def sha256_file(path: str | Path, chunk_bytes: int = 1024 * 1024) -> str:
 class WorkerSession:
     """Fenced owner of one job. Keep the context open while processing pages."""
 
-    def __init__(self, journal: "JobJournal", job_id: str, token: str):
+    def __init__(self, journal: "JobJournal", job_id: str, token: str,
+                 source_path: str, source_fingerprint: tuple[int, ...]):
         self._journal = journal
         self.job_id = job_id
         self._token = token
+        self._source_path = source_path
+        self._source_fingerprint = source_fingerprint
 
     def checkpoint(self, page_index: int, stage: str, artifact: str | Path) -> None:
-        self._journal.checkpoint(self.job_id, page_index, stage, artifact, worker_token=self._token)
+        self._journal.checkpoint(
+            self.job_id, page_index, stage, artifact, worker_token=self._token,
+            source_fingerprint=self._source_fingerprint,
+        )
 
     def set_state(self, next_state: str) -> None:
         self._journal.set_state(self.job_id, next_state, worker_token=self._token)
@@ -137,14 +143,41 @@ class JobJournal:
             raise KeyError(job_id)
         return dict(row)
 
-    def verify_source(self, job_id: str) -> None:
+    @staticmethod
+    def _source_stat_fingerprint(source: str | Path) -> tuple[int, ...]:
+        stat = Path(source).stat()
+        return (
+            stat.st_dev, stat.st_ino, stat.st_mode, stat.st_size,
+            stat.st_mtime_ns, stat.st_ctime_ns,
+        )
+
+    def _verified_source_fingerprint(self, job_id: str) -> tuple[int, ...]:
+        """Hash once and reject metadata/content changes during that hash."""
         job = self.get_job(job_id)
         try:
+            before = self._source_stat_fingerprint(job["source"])
             current = sha256_file(job["source"])
+            after = self._source_stat_fingerprint(job["source"])
         except OSError as exc:
             raise SourceChangedError("original PDF is missing or unreadable") from exc
+        if before != after:
+            raise SourceChangedError("original PDF changed during verification")
         if current != job["input_sha256"]:
             raise SourceChangedError("original PDF content changed; do not resume")
+        return after
+
+    @staticmethod
+    def _assert_source_fingerprint(source: str | Path, expected: tuple[int, ...]) -> None:
+        """Cheap per-page guard; the worker session performs full SHA audits at entry/exit."""
+        try:
+            current = JobJournal._source_stat_fingerprint(source)
+        except OSError as exc:
+            raise SourceChangedError("original PDF is missing or unreadable") from exc
+        if current != expected:
+            raise SourceChangedError("original PDF identity or metadata changed during processing")
+
+    def verify_source(self, job_id: str) -> None:
+        self._verified_source_fingerprint(job_id)
 
     @staticmethod
     def _check_worker_token(db: sqlite3.Connection, job_id: str, token: str | None) -> None:
@@ -177,13 +210,12 @@ class JobJournal:
         fencing stale writers. Legacy running/paused/failed jobs with no
         ownership history fail closed: their workers may still be live.
         """
-        self.verify_source(job_id)
         with exclusive_worker_lock(self.database, job_id):
-            self.verify_source(job_id)
+            fingerprint = self._verified_source_fingerprint(job_id)
             token = uuid.uuid4().hex
             with self._open() as db:
                 db.execute("BEGIN IMMEDIATE")
-                job = db.execute("SELECT state, output FROM jobs WHERE job_id=?", (job_id,)).fetchone()
+                job = db.execute("SELECT state, output, source FROM jobs WHERE job_id=?", (job_id,)).fetchone()
                 if job is None:
                     raise KeyError(job_id)
                 owner = db.execute("SELECT generation FROM worker_owners WHERE job_id=?", (job_id,)).fetchone()
@@ -193,29 +225,47 @@ class JobJournal:
                     raise JobSafetyError("legacy job has no verified worker ownership history")
                 if Path(job["output"]).exists():
                     raise FileExistsError("final output already exists; refusing resume")
-                self.verify_source(job_id)
+                self._assert_source_fingerprint(job["source"], fingerprint)
                 db.execute("""INSERT INTO worker_owners(job_id, generation, token) VALUES(?, 1, ?)
                     ON CONFLICT(job_id) DO UPDATE SET generation=generation+1, token=excluded.token""",
                     (job_id, token))
                 db.execute("UPDATE jobs SET state='running' WHERE job_id=?", (job_id,))
             try:
-                yield WorkerSession(self, job_id, token)
+                yield WorkerSession(self, job_id, token, job["source"], fingerprint)
             finally:
+                source_error = None
+                try:
+                    verified = self._verified_source_fingerprint(job_id)
+                    self._assert_source_fingerprint(job["source"], fingerprint)
+                    if verified != fingerprint:
+                        raise SourceChangedError("original PDF changed during processing")
+                except SourceChangedError as exc:
+                    source_error = exc
                 with self._open() as db:
                     db.execute("BEGIN IMMEDIATE")
                     owner = db.execute("SELECT token FROM worker_owners WHERE job_id=?", (job_id,)).fetchone()
                     if owner is not None and owner["token"] == token:
-                        db.execute("UPDATE jobs SET state='paused' WHERE job_id=? AND state='running'", (job_id,))
+                        final_state = "failed" if source_error else "paused"
+                        db.execute("UPDATE jobs SET state=? WHERE job_id=? AND state='running'",
+                                   (final_state, job_id))
                         db.execute("UPDATE worker_owners SET token=NULL WHERE job_id=?", (job_id,))
+                if source_error is not None:
+                    raise source_error
 
     def checkpoint(self, job_id: str, page_index: int, stage: str, artifact: str | Path,
-                   *, worker_token: str | None = None) -> None:
+                   *, worker_token: str | None = None,
+                   source_fingerprint: tuple[int, ...] | None = None) -> None:
         if stage not in STAGES:
             raise ValueError("unsupported stage")
+        if source_fingerprint is not None and worker_token is None:
+            raise JobSafetyError("source fingerprint requires a fenced worker")
         job = self.get_job(job_id)
         if not isinstance(page_index, int) or isinstance(page_index, bool) or not 0 <= page_index < job["page_count"]:
             raise ValueError("page index out of bounds")
-        self.verify_source(job_id)
+        if source_fingerprint is None:
+            self.verify_source(job_id)
+        else:
+            self._assert_source_fingerprint(job["source"], source_fingerprint)
         file = Path(artifact).resolve(strict=True)
         if file == Path(job["source"]) or file == Path(job["output"]):
             raise JobSafetyError("artifact may not be the original or final PDF")
@@ -232,7 +282,10 @@ class JobJournal:
             self._check_worker_token(db, job_id, worker_token)
             if current["state"] != "running":
                 raise JobSafetyError("cannot write checkpoints outside a running job")
-            self.verify_source(job_id)
+            if source_fingerprint is None:
+                self.verify_source(job_id)
+            else:
+                self._assert_source_fingerprint(job["source"], source_fingerprint)
             if sha256_file(file) != digest:
                 raise JobSafetyError("checkpoint artifact changed during verification")
 
