@@ -282,7 +282,8 @@ class LibraryIndex:
             # artifact. Always consume/check all checkpoints before replacing
             # the previous FTS transaction; never use the unchanged-PDF shortcut.
             return self._commit_pages(
-                src, job["input_sha256"], count, verified_pages(),\n                "native" if stage == "native_text" else "ocr",
+                src, job["input_sha256"], count, verified_pages(),
+                "native" if stage == "native_text" else "ocr",
                 cancel_requested, skip_unchanged_native=False,
             )
 
