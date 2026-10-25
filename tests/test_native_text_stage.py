@@ -1,5 +1,6 @@
 """Real pypdf subprocess + SQLite resume tests for born-digital text only."""
 import os
+import multiprocessing as mp
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,18 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from pdfstudio import JobJournal, JobSafetyError, sha256_file
 from pdfstudio.bounded_parser import IsolatedPdfReader, ParserIsolationError
 from pdfstudio.native_text_stage import run_native_text_stage
+
+
+
+def _crash_after_one_checkpoint(database: str, job_id: str, folder: str) -> None:
+    calls = 0
+    def crash():
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            os._exit(23)
+        return False
+    run_native_text_stage(JobJournal(database), job_id, folder, cancel_requested=crash)
 
 
 @unittest.skipUnless(os.name in ("posix", "nt"), "OS resource caps required")
@@ -117,6 +130,25 @@ class NativeTextStageTests(unittest.TestCase):
         second = run_native_text_stage(self.journal, self.job, self.artifacts)
         self.assertEqual(second["processed"], (1, 2))
         self.assertEqual(second["skipped"], (0,))
+
+    def test_process_crash_keeps_verified_page_and_recovers(self):
+        process = mp.get_context("spawn").Process(
+            target=_crash_after_one_checkpoint,
+            args=(str(self.journal.database), self.job, str(self.artifacts)),
+        )
+        process.start()
+        process.join(timeout=45)
+        if process.is_alive():
+            process.kill()
+            process.join()
+            self.fail("worker did not exit within timeout")
+        self.assertEqual(process.exitcode, 23)
+        self.assertEqual(self.journal.get_job(self.job)["state"], "running")
+        self.assertEqual(self.journal.recovery_snapshot(self.job, "native_text")["valid_pages"], (0,))
+        resumed = run_native_text_stage(self.journal, self.job, self.artifacts)
+        self.assertEqual(resumed["processed"], (1, 2))
+        self.assertEqual(resumed["skipped"], (0,))
+        self.assertEqual(self.journal.get_job(self.job)["state"], "paused")
 
     def test_page_count_mismatch_fails_without_checkpoint(self):
         other = self.journal.create_job(self.source, self.root / "wrong.pdf", 2)
