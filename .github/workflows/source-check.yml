@@ -52,3 +52,9 @@ jobs:
         env:
           PYTHONPATH: engine
         run: python benchmarks/synthetic_pdf_bench.py --pages 1000 --chars-per-page 256
+
+      - name: Synthetic 5000-page checkpoint, resume and FTS integration (Linux only)
+        if: runner.os != 'Windows'
+        env:
+          PYTHONPATH: engine
+        run: python benchmarks/synthetic_pdf_bench.py --pages 5000 --chars-per-page 256 --timeout-seconds 300 --checkpoint-resume
