@@ -36,14 +36,9 @@ jobs:
         env:
           PYTHONPATH: engine
         run: python -m unittest discover -s tests -v
-      - name: Run real Windows page-worker regression tests
+      - name: Run complete Windows source suite (Job Object + inspection + FTS + page tools)
         if: runner.os == 'Windows'
         env:
           PYTHONPATH: engine
-        run: python -m unittest discover -s tests -p test_page_isolation.py -v
-      - name: Run real Windows Job Object lifecycle tests
-        if: runner.os == 'Windows'
-        env:
-          PYTHONPATH: engine
-        run: python -m unittest discover -s tests -p test_windows_job.py -v
+        run: python -m unittest discover -s tests -v
 
