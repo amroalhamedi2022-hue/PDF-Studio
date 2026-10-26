@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pdfstudio.page_tools import PageToolError, extract_pages, merge_pdfs
+from pdfstudio.page_tools import PageToolError, extract_pages, merge_pdfs, rotate_pages
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DictionaryObject, NameObject
 
@@ -42,6 +42,31 @@ class PageToolsTests(unittest.TestCase):
         merge_pdfs([self.a, self.b], self.out)
         with self.out.open('rb') as stream:
             self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages], [300, 400, 500, 600, 700])
+
+    def test_rotate_selected_pages_preserves_order_and_source(self):
+        before = self.a.read_bytes()
+        rotate_pages(self.a, self.out, [1], degrees=90)
+        with self.out.open('rb') as stream:
+            reader = PdfReader(stream)
+            pages = list(reader.pages)
+            self.assertEqual([float(page.mediabox.width) for page in pages], [300, 400, 500])
+            self.assertEqual([int(page.get('/Rotate', 0)) % 360 for page in pages], [0, 90, 0])
+        self.assertEqual(before, self.a.read_bytes())
+
+    def test_rotate_rejects_invalid_angles_and_page_selections(self):
+        for angle in (0, 45, 360, True):
+            with self.subTest(angle=angle), self.assertRaises(PageToolError):
+                rotate_pages(self.a, self.out, [0], degrees=angle)
+        for selection in ([], [3], "0", "4"):
+            with self.subTest(selection=selection), self.assertRaises(PageToolError):
+                rotate_pages(self.a, self.out, selection, degrees=90)
+        self.assertFalse(self.out.exists())
+
+    def test_rotate_refuses_existing_output_without_clobber(self):
+        self.out.write_bytes(b'keep this')
+        with self.assertRaises(FileExistsError):
+            rotate_pages(self.a, self.out, [0], degrees=90)
+        self.assertEqual(self.out.read_bytes(), b'keep this')
 
     def test_existing_output_refused(self):
         self.out.write_bytes(b'keep this')

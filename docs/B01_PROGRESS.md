@@ -466,3 +466,16 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 **Google Drive handoff:** **FAILED / NOT AVAILABLE**. No Google Docs/Drive write connector is exposed in this runtime, so the specified `PDF Studio — HANDOFF` document was not updated. No sync success is claimed.
 
 **Next within B01:** run a real bounded disk-pressure experiment only if it can be isolated safely on a free runner, then continue source-level resource/worker recovery gates. Keep B01 OPEN; do not start B02.
+
+
+## 2026-10-26 — B01 page-operation slice: bounded page rotation
+
+**Milestone:** B01 — Resource-Bounded PDF Core (still OPEN). This slice adds a real page transformation without replacing the existing extraction/merge contract.
+
+- Production: **rotate_pages(source, output, pages="all", degrees=90)** supports clockwise 90/180/270-degree rotation, zero-based integer iterables or the existing one-based inclusive range syntax. It reuses B01's isolated worker, source SHA preflight/recheck, page/output caps, free-space estimate, staging inode verification and atomic no-clobber publication.
+- Safety: encrypted and potentially signed PDFs remain fail-closed through shared preflight. The input PDF is never written; invalid angles/ranges and an existing destination are rejected.
+- Tests added: selected-page rotation preserves page order, mediabox dimensions and input bytes; invalid angles/ranges fail without output; existing output remains untouched.
+- Dependency review: uses the existing pinned pypdf==6.21.2 public PageObject.rotate API; no upstream implementation was copied and no dependency was added.
+- Exact source/test SHA and CI: **PENDING** until the new branch run completes. Do not count older green CI as evidence for this change.
+- **NOT TESTED:** UI controls, visual render/orientation on Android or Windows, crop/deskew/reorder/delete/split, real scanned/large PDFs, OCR engine, and full F08.01 acceptance.
+- Next: verify current SHA on Ubuntu + Windows, fix any regression, then keep B01 active for worker ownership/recovery and realistic large-file tests. No APK/EXE build is useful for this isolated Python page-transform API.

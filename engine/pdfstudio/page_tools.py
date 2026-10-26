@@ -177,6 +177,42 @@ def _merge_pdfs_direct(sources: Iterable[str | Path], output: str | Path,
     return dst
 
 
+def _rotate_pages_direct(source: str | Path, output: str | Path,
+                        pages: Iterable[int] | str, rotation: int,
+                        digests: tuple[str, ...], max_pages: int,
+                        max_output_bytes: int) -> Path:
+    """Rotate selected pages clockwise into a new PDF without altering the source."""
+    if not isinstance(rotation, int) or isinstance(rotation, bool) or rotation not in (90, 180, 270):
+        raise PageToolError("rotation must be 90, 180, or 270 degrees clockwise")
+    src = _validated_source(source)
+    dst = _validated_output(output, (src,), allow_existing_staging=True)
+    with src.open("rb") as fh:
+        reader = PdfReader(fh, strict=False)
+        _preflight_reader(reader)
+        count = len(reader.pages)
+        if count < 1 or count > max_pages:
+            raise PageToolError("page count exceeds configured limit")
+        if isinstance(pages, str):
+            try:
+                selected = parse_page_ranges(pages, count)
+            except PageRangeError as exc:
+                raise PageToolError(str(exc)) from exc
+        else:
+            selected = list(pages)
+            if not selected or any(not isinstance(i, int) or isinstance(i, bool) for i in selected):
+                raise PageToolError("provide one or more integer 0-based page indexes")
+        if any(i < 0 or i >= count for i in selected):
+            raise PageToolError(f"page index outside 0..{count - 1}")
+        selected_set = set(selected)
+        writer = PdfWriter()
+        for index, page in enumerate(reader.pages):
+            if index in selected_set:
+                page.rotate(rotation)
+            writer.add_page(page)
+        _publish(writer, dst, (src,), digests, max_output_bytes)
+    return dst
+
+
 def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int] | str,
                   *, timeout_seconds: float = 90.0, max_memory_mb: int = 768,
                   max_pages: int = 10000,
@@ -199,6 +235,33 @@ def merge_pdfs(sources: Iterable[str | Path], output: str | Path, *,
     """Merge pages with an output ceiling and preflight/reserved disk budget."""
     from .page_isolation import run_page_operation
     return run_page_operation("merge", tuple(sources), output,
+                              timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+                              max_pages=max_pages, max_output_bytes=max_output_bytes,
+                              free_space_margin_bytes=free_space_margin_bytes)
+
+ 
+def rotate_pages(source: str | Path, output: str | Path,
+                 pages: Iterable[int] | str = "all", *, degrees: int = 90,
+                 timeout_seconds: float = 90.0, max_memory_mb: int = 768,
+                 max_pages: int = 10000,
+                 max_output_bytes: int = 1024 * 1024 * 1024,
+                 free_space_margin_bytes: int = 16 * 1024 * 1024) -> Path:
+    """Rotate selected pages clockwise (90/180/270) into a new no-clobber PDF.
+
+    Range strings are one-based inclusive; integer iterables use zero-based
+    page indexes, matching the existing extraction API.
+    """
+    from .page_isolation import run_page_operation
+    if not isinstance(degrees, int) or isinstance(degrees, bool) or degrees not in (90, 180, 270):
+        raise PageToolError("degrees must be 90, 180, or 270 clockwise")
+    if isinstance(pages, str):
+        selection = pages
+    else:
+        try:
+            selection = list(pages)
+        except TypeError as exc:
+            raise PageToolError("pages must be a range string or iterable of indexes") from exc
+    return run_page_operation("rotate", (source,), output, (selection, degrees),
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
                               max_pages=max_pages, max_output_bytes=max_output_bytes,
                               free_space_margin_bytes=free_space_margin_bytes)
