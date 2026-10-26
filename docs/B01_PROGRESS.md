@@ -270,3 +270,20 @@ Implement page ranges, metadata browser, safe file IO, and parser-isolation limi
 **Acceptance status:** F04.03 and F04.06 are **IN PROGRESS**, not PASS. Realistic >=2 GB files, scanned PDFs, OS reboot recovery, hostile-input sandboxing, Android/SAF, Windows GUI/EXE and device acceptance remain **NOT TESTED**. No APK/EXE build was useful for this Python/filesystem/SQLite contract; the cross-platform source suite directly exercises it. PR #2 remains draft/open/unmerged; `main` unchanged. Google Drive Handoff write connector remains unavailable in this runtime; no successful sync is claimed.
 
 **Next:** remain in B01; measure realistic disk/RAM behavior and strengthen safe recovery/ownership, then independently recheck the B01 exit gates before opening B02.
+
+
+## B01 follow-up — 2026-10-26: end-to-end page-worker timeout
+
+**Production change:** `engine/pdfstudio/page_isolation.py` now starts the wall-clock deadline before spawning the worker. Process startup and Windows Job Object assignment consume the same configured timeout; the parent polls only for the remaining budget. Previously, startup time was excluded, so a slow spawn could exceed the caller's timeout without being counted.
+
+**Regression test:** `tests/test_page_isolation.py::test_timeout_includes_worker_startup` deliberately delays process startup past a short timeout and verifies the operation fails closed, publishes no final PDF, and removes its staging directory.
+
+**Commits:** production `da3ad53c21c84803b3d40dd9116c6a4a72a2bbc9`; regression `655cb8f20d5e67e124bc464ec5a02b9245023917`.
+
+**Exact-code CI:** [run #40268195202](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40268195202) and [run #40268199015](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40268199015) both **PASS** on Windows and Ubuntu for SHA `655cb8f20d5e67e124bc464ec5a02b9245023917`. Each host ran **115 tests PASS**; Linux skipped four Windows-only tests. The 100-page smoke passed on both hosts. Linux's 5000-page synthetic native-text/checkpoint crash-resume/FTS benchmark passed: 2,638,282-byte born-digital PDF; 2,500 durable checkpoints before intentional exit code 23; resume processed 2,500 pages in 10.858 s, reused all 5,000 in 0.782 s on the next pass, and indexed FTS in 2.297 s; source SHA unchanged and FTS integrity PASS. Parent/max-child peak RSS were 53.04/54.15 MiB (separate high-water marks, not summed).
+
+**Limits:** the timeout test proves the configured deadline includes worker startup on CI; it is not an Android/Windows GUI test or a security sandbox. The 5000-page input is still a 2.64 MB synthetic born-digital PDF—not OCR, a scanned corpus, or a realistic >=2 GB file. OS reboot recovery, physical-device behavior, and F04.06 realistic-large-file acceptance remain **NOT TESTED**. No APK/EXE build was justified for this Python worker-timeout contract.
+
+**Google Drive handoff:** Drive/Docs write connector is unavailable in this runtime. `PDF Studio — HANDOFF` was **not updated**; sync status is **FAILED / NOT AVAILABLE**, not successful. PR #2 remains draft/open/unmerged; `main` unchanged.
+
+**Next within B01:** keep the resource-bounded core milestone open; proceed with a disk-backed large-file profile and bounded parser/recovery evidence before considering B02.

@@ -13,7 +13,7 @@
 ## 0. Execution principles (binding)
 - Search authoritative open-source alternatives *before* implementing or modifying any feature. Evaluate technical quality, maintenance, license of code + model weights, CVEs, dependencies, and Android/Windows viability; record decision as ADR. Adapt proven implementations legally; never blindly copy.
 - GitHub is authoritative: `main` protected by convention; work on `feature/*` branches and PRs, no auto-merge, no unapproved rewrite of history, no changes in other project repos, especially AquaWord.
-- One project-specific automation only; never alter existing AquaWord automation. Other repo changes prohibited.
+- Use only the existing user-approved combined AquaWord + PDF Studio automation; do not create a separate automation. Keep each app's repository, source, branches, PRs, CI, artifacts, and handoff strictly separate. Do not touch unrelated projects.
 - Source-level CI: tests, lint, dependency/license/SBOM/security scans run fast by default. Allow selectively triggered packaging for milestone integration/device validation when it answers a documented test question; do not package pointlessly on every push. Production release remains a separate gated build (`workflow_dispatch`, `final-ready` approval) only after final acceptance.
 - End of each batch: concrete changed paths, commits/PR, tests with PASS/FAIL/NOT TESTED, measured performance when applicable, known limitations, and next batch. Never claim device validation from source checks.
 - Public repo means no private scans, user files, passwords, private models/tokens, test secrets, or personal PDFs in history.
