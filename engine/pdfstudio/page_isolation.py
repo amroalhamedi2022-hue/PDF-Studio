@@ -9,6 +9,7 @@ import hashlib
 import math
 import multiprocessing as mp
 import os
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -39,6 +40,72 @@ def _sha256_file_before_deadline(path: str | Path, deadline: float,
 def _require_deadline(deadline: float) -> None:
     if time.monotonic() >= deadline:
         raise TimeoutError("PDF operation deadline exceeded")
+
+
+_DEFAULT_FREE_SPACE_MARGIN_BYTES = 16 * 1024 * 1024
+_MIN_ESTIMATED_OUTPUT_BYTES = 1024 * 1024
+
+
+def _estimate_output_bytes(sources, max_output_bytes: int) -> int:
+    """Conservative heuristic: 2x input bytes plus 1 MiB per source, capped."""
+    from .page_tools import PageToolError
+
+    try:
+        input_bytes = sum(Path(source).stat().st_size for source in sources)
+    except OSError as exc:
+        raise PageToolError("cannot estimate PDF output space from source sizes") from exc
+    estimate = max(_MIN_ESTIMATED_OUTPUT_BYTES,
+                   (2 * input_bytes) + (len(sources) * _MIN_ESTIMATED_OUTPUT_BYTES))
+    return min(max_output_bytes, estimate)
+
+
+def _check_free_space(directory: Path, estimated_output_bytes: int,
+                      free_space_margin_bytes: int) -> None:
+    """Fail before worker spawn unless estimate plus safety margin is available."""
+    from .page_tools import PageToolError
+
+    try:
+        free_bytes = shutil.disk_usage(directory).free
+    except OSError as exc:
+        raise PageToolError("cannot determine free disk space for PDF output") from exc
+    required_bytes = estimated_output_bytes + free_space_margin_bytes
+    if free_bytes < required_bytes:
+        raise PageToolError(
+            "insufficient free space for PDF output estimate "
+            f"(free={free_bytes}, estimated_output={estimated_output_bytes}, "
+            f"required_margin={free_space_margin_bytes})"
+        )
+
+
+def _reserve_staging_file(path: Path, estimated_output_bytes: int) -> None:
+    """Reserve the estimated output on the destination filesystem before parsing."""
+    from .page_tools import PageToolError
+
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    try:
+        if os.name == "posix":
+            fallocate = getattr(os, "posix_fallocate", None)
+            if fallocate is None:
+                raise OSError("physical preallocation is unavailable on this POSIX host")
+            fallocate(fd, 0, estimated_output_bytes)
+        else:
+            # Windows CRT file extension allocates the reserved staging length;
+            # the later writer truncates it to the actual PDF size.
+            os.ftruncate(fd, estimated_output_bytes)
+        os.fsync(fd)
+        if os.fstat(fd).st_size != estimated_output_bytes:
+            raise OSError("reserved staging file has an unexpected size")
+    except BaseException as exc:
+        os.close(fd)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        if isinstance(exc, (OSError, NotImplementedError)):
+            raise PageToolError("could not reserve estimated PDF output space") from exc
+        raise
+    else:
+        os.close(fd)
 
 
 def _worker(pipe, gate, action, sources, output, selection, digests, memory_bytes,
@@ -92,7 +159,8 @@ def _worker(pipe, gate, action, sources, output, selection, digests, memory_byte
 def run_page_operation(action: str, sources, output, selection=None, *,
                        timeout_seconds: float = 90.0, max_memory_mb: int = 768,
                        max_pages: int = 10000,
-                       max_output_bytes: int = 1024 * 1024 * 1024) -> Path:
+                       max_output_bytes: int = 1024 * 1024 * 1024,
+                       free_space_margin_bytes: int = _DEFAULT_FREE_SPACE_MARGIN_BYTES) -> Path:
     from .page_tools import PageToolError, _validated_output, _validated_source
     if os.name not in ("posix", "nt"):
         raise PageToolError("isolated page tools unavailable on this host")
@@ -109,6 +177,9 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                        ("max_output_bytes", max_output_bytes)):
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise ValueError(f"{key} must be a positive integer")
+    if (not isinstance(free_space_margin_bytes, int)
+            or isinstance(free_space_margin_bytes, bool) or free_space_margin_bytes < 0):
+        raise ValueError("free_space_margin_bytes must be a non-negative integer")
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) \
             or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be finite and positive")
@@ -129,7 +200,15 @@ def run_page_operation(action: str, sources, output, selection=None, *,
         resolved = tuple(resolved_items)
         destination = _validated_output(output, resolved)
         _require_deadline(deadline)
+        estimated_output_bytes = _estimate_output_bytes(resolved, max_output_bytes)
+        _check_free_space(destination.parent, estimated_output_bytes, free_space_margin_bytes)
+        _require_deadline(deadline)
         digests = tuple(_sha256_file_before_deadline(p, deadline) for p in resolved)
+        _require_deadline(deadline)
+        # Recheck after hashing to catch disk usage changes during source preflight.
+        estimated_output_bytes = _estimate_output_bytes(resolved, max_output_bytes)
+        _check_free_space(destination.parent, estimated_output_bytes, free_space_margin_bytes)
+        _require_deadline(deadline)
     except TimeoutError as exc:
         raise PageToolError("isolated page operation timed out") from exc
     # The child writes only into a private same-filesystem staging directory.
@@ -138,6 +217,11 @@ def run_page_operation(action: str, sources, output, selection=None, *,
     # output behind; publication remains atomic and no-clobber via os.link.
     with tempfile.TemporaryDirectory(prefix=".pdfstudio-stage-", dir=destination.parent) as stage_dir:
         staged = Path(stage_dir) / "result.pdf"
+        try:
+            _reserve_staging_file(staged, estimated_output_bytes)
+            _require_deadline(deadline)
+        except TimeoutError as exc:
+            raise PageToolError("isolated page operation timed out") from exc
         ctx = mp.get_context("spawn")
         parent, child = ctx.Pipe(duplex=False)
         gate = ctx.Event() if os.name == "nt" else None
