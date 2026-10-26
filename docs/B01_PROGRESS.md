@@ -502,7 +502,7 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - Added `reorder_pages()`: requires a complete permutation of all zero-based indexes or an equivalent one-based inclusive range string. Missing, duplicate, boolean, negative and out-of-range indexes fail closed.
 - Both operations reuse the isolated worker, bounded CPU/RAM/time/output, disk preflight, source SHA revalidation, private staging and atomic no-clobber publication.
 - Added unit/integration regressions for page order/count, source-byte preservation, invalid selections, no zero-page output and actual worker dispatch.
-- **CI status at checkpoint authoring: PENDING** for exact source/test SHA. F08.01 remains IN PROGRESS even after these tests: split operation and Android/Windows UI/visual acceptance are still NOT TESTED.
+- **PASS — exact source + test SHA `ba919b993dabeed298595d17702365e00358673d`:** [CI #40388250022](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40388250022) completed on Ubuntu + Windows, 145 tests per host (four Windows-only tests skipped on Ubuntu). Delete/reorder unit and isolated-worker integration regressions passed. Linux 5000-page synthetic checkpoint/resume/FTS also passed; this is not a realistic >=2 GiB or OCR corpus. F08.01 remains IN PROGRESS because split operation and Android/Windows UI/visual acceptance are still NOT TESTED.
 - No APK/EXE build: the question is the page-list transformation contract, directly answered by source and isolated-worker tests. No new dependency or copied third-party implementation.
 - Google Drive `PDF Studio — HANDOFF` sync remains FAILED / NOT AVAILABLE in this runtime; no Drive write is claimed.
 - Continue B01; do not open B02.
