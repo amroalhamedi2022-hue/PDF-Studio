@@ -481,4 +481,5 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - Disk-backed smoke: synthetic 64 MiB input/output, 135,267,466-byte reservation estimate, no staging leftovers, source SHA unchanged, PASS on both OS CI jobs.
 - These fixtures are synthetic born-digital PDFs; results do **not** establish OCR quality, a realistic 2 GiB scanned workload, hostile-PDF sandboxing, Android SAF/UI, Windows GUI, or device acceptance. Rotation is source-tested, not yet visually validated in either app.
 - **NOT TESTED:** UI controls, visual render/orientation on Android or Windows, crop/deskew/reorder/delete/split, real scanned/large PDFs, OCR engine, and full F08.01 acceptance.
+- Google Drive Handoff sync: FAILED / NOT AVAILABLE because this runtime exposes no Google Docs/Drive write connector; the specified document was not updated and no sync success is claimed.
 - Next: verify current SHA on Ubuntu + Windows, fix any regression, then keep B01 active for worker ownership/recovery and realistic large-file tests. No APK/EXE build is useful for this isolated Python page-transform API.
