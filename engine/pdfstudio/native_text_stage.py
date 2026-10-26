@@ -40,6 +40,7 @@ def run_native_text_stage(
     max_pages: int = 10000,
     max_chars_per_page: int = 500000,
     max_total_chars: int = 20000000,
+    max_checkpoint_bytes: int = 96 * 1024 * 1024,
     timeout_seconds: float = 90.0,
     max_memory_mb: int = 768,
     cancel_requested: Callable[[], bool] | None = None,
@@ -52,6 +53,10 @@ def run_native_text_stage(
     """
     if cancel_requested is not None and not callable(cancel_requested):
         raise TypeError("cancel_requested must be callable")
+    if (not isinstance(max_checkpoint_bytes, int)
+            or isinstance(max_checkpoint_bytes, bool)
+            or max_checkpoint_bytes < 1):
+        raise ValueError("max_checkpoint_bytes must be a positive integer")
     folder = Path(artifact_directory)
     folder.mkdir(parents=True, exist_ok=True)
     if not folder.is_dir():
@@ -71,6 +76,28 @@ def run_native_text_stage(
                 skipped.append(page)
             else:
                 missing.append(page)
+
+        # Bound the bytes referenced by this stage before allocating more
+        # checkpoint artifacts. Count registered files even if their digest
+        # is bad: a corrupt large file still occupies disk and is not ours to
+        # delete automatically. Orphan files from an abrupt crash are outside
+        # this journal-derived accounting and require a separate safe cleanup
+        # policy.
+        with journal._open() as db:
+            rows = db.execute(
+                "SELECT artifact FROM checkpoints WHERE job_id=? AND stage='native_text'",
+                (job_id,),
+            ).fetchall()
+        checkpoint_bytes = 0
+        for row in rows:
+            try:
+                checkpoint_bytes += Path(row["artifact"]).stat().st_size
+            except OSError:
+                # Missing artifacts are reported by the snapshot and rebuilt.
+                continue
+        if checkpoint_bytes > max_checkpoint_bytes:
+            raise ValueError("registered checkpoint artifacts exceed configured byte cap")
+
         if cancel_requested is not None and cancel_requested():
             owner.set_state("paused")
             return {"processed": (), "skipped": tuple(skipped), "cancelled": True}
@@ -89,8 +116,12 @@ def run_native_text_stage(
                         owner.set_state("paused")
                         return {"processed": tuple(processed),
                                 "skipped": tuple(skipped), "cancelled": True}
+                    encoded_size = len(text.encode("utf-8"))
+                    if checkpoint_bytes + encoded_size > max_checkpoint_bytes:
+                        raise ValueError("native-text checkpoints exceed configured byte cap")
                     artifact = _save_page_text(folder, page, text)
                     owner.checkpoint(page, "native_text", artifact)
+                    checkpoint_bytes += encoded_size
                     processed.append(page)
         final = owner.recovery_snapshot("native_text")
         if final["invalid_pages"] or final["missing_pages"]:
