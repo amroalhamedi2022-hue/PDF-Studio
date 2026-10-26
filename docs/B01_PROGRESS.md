@@ -444,3 +444,25 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - Ubuntu synthetic 5000-page interrupted/resume run: 2,638,282-byte PDF; interruption after 2500 pages (10.093 s), resume remaining 2500 (6.062 s), verified reuse of all 5000 (0.769 s), FTS integrity PASS, source unchanged, 53.22 MiB parent / 53.95 MiB max-child peak RSS.
 - Windows: 100-page smoke and 64 MiB disk-backed output reservation PASS. No Windows 1000/5000-page benchmark in this workflow.
 - Limits remain: generated native-text PDF only, not real Arabic/English OCR, not a realistic >=2 GiB corpus, not OS reboot recovery or a hostile-PDF sandbox, and not Android/Windows GUI/device acceptance. B01 remains OPEN; F04.03/F04.06 remain IN PROGRESS.
+
+
+## B01 — 2026-10-26: publication-race guard and mid-write disk-full cleanup
+
+**Active milestone:** B01 — Resource-Bounded PDF Core remains OPEN. This slice strengthens the existing extraction/merge publication contract; it does not open B02 or claim complete F08.01/F04 acceptance.
+
+**Production:** commit [`2ceb64d06edb31e925c4a80732a36598e647e80e`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/2ceb64d06edb31e925c4a80732a36598e647e80e) adds `_publish_verified_staging_file`. It revalidates the reserved staging inode immediately before publication, uses atomic `os.link` no-clobber semantics, then checks that the caller-visible destination is a regular file with the originally reserved device/inode and revalidates its PDF header/size. If the staging path is swapped to a different regular inode at the link boundary, the unexpected hard link is removed only while it still aliases the unexpected staging inode; an unrelated racing destination is never removed.
+
+**Regression tests:** commit [`eae2cf49fc00d34651a5bb9f989757b9a2835f29`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/eae2cf49fc00d34651a5bb9f989757b9a2835f29) adds three deterministic tests:
+- a concurrent process creates the final path after preflight; publication fails with `FileExistsError` and preserves its bytes;
+- the staged inode is replaced at the link boundary; the operation fails and leaves no caller-visible output;
+- simulated `ENOSPC` after a partial writer output cleans the staging file and preserves the input PDF.
+
+**Exact code+test CI:** [run #40376149983](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40376149983) **PASS** on Ubuntu and Windows. Each host ran 133 source tests; Ubuntu skipped four Windows-only tests. Both passed the 100-page smoke and 64 MiB disk-backed extraction. Linux also passed the 1000-page smoke and 5000-page interrupted/resume/FTS integration. The 5000-page fixture was 2,638,282 bytes of synthetic born-digital text, not OCR or a realistic >=2 GiB scanned PDF.
+
+**Limits:** the disk-full test injects `ENOSPC` deterministically; it is not a real concurrent disk-exhaustion experiment. Post-link checks narrow publication races but do not create a complete same-user filesystem sandbox or prove all Windows path races impossible. F04.01/F04.02/F04.05 and F08.01 remain **IN PROGRESS**; real large/scanned corpus, actual disk-full contention, Android/Windows GUI and device acceptance remain **NOT TESTED**.
+
+**Build decision:** no APK/EXE. This is a Python filesystem contract directly tested on both operating systems; app packaging would not answer the race/cleanup test more strongly.
+
+**Google Drive handoff:** **FAILED / NOT AVAILABLE**. No Google Docs/Drive write connector is exposed in this runtime, so the specified `PDF Studio — HANDOFF` document was not updated. No sync success is claimed.
+
+**Next within B01:** run a real bounded disk-pressure experiment only if it can be isolated safely on a free runner, then continue source-level resource/worker recovery gates. Keep B01 OPEN; do not start B02.
