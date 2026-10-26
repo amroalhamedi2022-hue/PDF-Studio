@@ -232,8 +232,9 @@ def _worker(pipe, gate, action, sources, output, selection, digests, memory_byte
         import logging
         logging.getLogger("pypdf").setLevel(logging.CRITICAL)
         from .page_tools import (
-            _crop_pages_direct, _extract_pages_direct, _merge_pdfs_direct,
-            _rotate_pages_direct, PageToolError,
+            _crop_pages_direct, _delete_pages_direct, _extract_pages_direct,
+            _merge_pdfs_direct, _reorder_pages_direct, _rotate_pages_direct,
+            PageToolError,
         )
         # Reject a changed source before parsing and immediately before publishing.
         if any(sha256_file(p) != h for p, h in zip(sources, digests)):
@@ -252,6 +253,12 @@ def _worker(pipe, gate, action, sources, output, selection, digests, memory_byte
             pages, box = selection
             _crop_pages_direct(sources[0], output, pages, box, digests,
                                max_pages, max_output_bytes)
+        elif action == "delete":
+            _delete_pages_direct(sources[0], output, selection, digests,
+                                 max_pages, max_output_bytes)
+        elif action == "reorder":
+            _reorder_pages_direct(sources[0], output, selection, digests,
+                                  max_pages, max_output_bytes)
         else:
             pipe.send(("error", "operation"))
             return
@@ -287,7 +294,7 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                 raise ImportError("resource limits unavailable")
         except ImportError as exc:
             raise PageToolError("OS resource limits unavailable") from exc
-    if action not in ("extract", "merge", "rotate", "crop"):
+    if action not in ("extract", "merge", "rotate", "crop", "delete", "reorder"):
         raise ValueError("unsupported operation")
     for key, value in (("max_memory_mb", max_memory_mb), ("max_pages", max_pages),
                        ("max_output_bytes", max_output_bytes)):
@@ -299,7 +306,7 @@ def run_page_operation(action: str, sources, output, selection=None, *,
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) \
             or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be finite and positive")
-    if action in ("extract", "rotate", "crop") and len(sources) != 1:
+    if action in ("extract", "rotate", "crop", "delete", "reorder") and len(sources) != 1:
         raise ValueError(f"{action} requires one source")
     if action == "merge" and len(sources) < 2:
         raise PageToolError("merge requires at least two PDF inputs")

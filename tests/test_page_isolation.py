@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from pypdf import PdfReader, PdfWriter
-from pdfstudio.page_tools import PageToolError, _publish, crop_pages, extract_pages, merge_pdfs
+from pdfstudio.page_tools import (PageToolError, _publish, crop_pages, delete_pages,
+                                  extract_pages, merge_pdfs, reorder_pages)
 from pdfstudio.jobs import sha256_file
 from pdfstudio.page_isolation import _reserve_staging_file, _verify_staging_file
 
@@ -42,6 +43,21 @@ class IsolatedPageToolTests(unittest.TestCase):
         with self.out.open("rb") as stream:
             self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages], [200, 300, 400])
         self.assertEqual((self.a.read_bytes(), self.b.read_bytes()), originals)
+
+    def test_delete_and_reorder_use_isolated_worker_without_source_mutation(self):
+        before = self.a.read_bytes()
+        deleted = self.root / "deleted.pdf"
+        reordered = self.root / "reordered.pdf"
+        delete_pages(self.a, deleted, [1])
+        reorder_pages(self.a, reordered, [1, 0])
+        with deleted.open("rb") as stream:
+            self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages],
+                             [200.0])
+        with reordered.open("rb") as stream:
+            self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages],
+                             [300.0, 200.0])
+        self.assertEqual(self.a.read_bytes(), before)
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
     def test_crop_runs_in_isolated_worker_and_keeps_source_unchanged(self):
         before = self.a.read_bytes()

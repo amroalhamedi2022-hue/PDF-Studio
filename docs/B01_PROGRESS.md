@@ -495,3 +495,14 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - No new dependency or copied third-party implementation. Uses the already pinned pypdf dependency. No APK/EXE build: the question is PDF CropBox semantics and fail-closed source behavior, directly answered by Python integration tests.
 - Google Drive `PDF Studio — HANDOFF` sync remains FAILED / NOT AVAILABLE in this runtime because no Drive/Docs write connector is exposed; no successful sync is claimed.
 - Continue B01; do not open B02 until B01 acceptance is complete.
+
+## 2026-10-26 — B01 page operations: delete and reorder
+
+- Added `delete_pages()`: selected pages are removed into a new PDF, the source is preserved, and deleting every page is rejected so no zero-page output can be published.
+- Added `reorder_pages()`: requires a complete permutation of all zero-based indexes or an equivalent one-based inclusive range string. Missing, duplicate, boolean, negative and out-of-range indexes fail closed.
+- Both operations reuse the isolated worker, bounded CPU/RAM/time/output, disk preflight, source SHA revalidation, private staging and atomic no-clobber publication.
+- Added unit/integration regressions for page order/count, source-byte preservation, invalid selections, no zero-page output and actual worker dispatch.
+- **CI status at checkpoint authoring: PENDING** for exact source/test SHA. F08.01 remains IN PROGRESS even after these tests: split operation and Android/Windows UI/visual acceptance are still NOT TESTED.
+- No APK/EXE build: the question is the page-list transformation contract, directly answered by source and isolated-worker tests. No new dependency or copied third-party implementation.
+- Google Drive `PDF Studio — HANDOFF` sync remains FAILED / NOT AVAILABLE in this runtime; no Drive write is claimed.
+- Continue B01; do not open B02.

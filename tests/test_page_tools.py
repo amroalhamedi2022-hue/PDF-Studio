@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pdfstudio.page_tools import PageToolError, crop_pages, extract_pages, merge_pdfs, rotate_pages
+from pdfstudio.page_tools import (PageToolError, crop_pages, delete_pages, extract_pages,
+                                  merge_pdfs, reorder_pages, rotate_pages)
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DictionaryObject, NameObject
 
@@ -42,6 +43,34 @@ class PageToolsTests(unittest.TestCase):
         merge_pdfs([self.a, self.b], self.out)
         with self.out.open('rb') as stream:
             self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages], [300, 400, 500, 600, 700])
+
+    def test_delete_selected_pages_preserves_order_and_source(self):
+        before = self.a.read_bytes()
+        delete_pages(self.a, self.out, [1])
+        with self.out.open('rb') as stream:
+            self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages],
+                             [300.0, 500.0])
+        self.assertEqual(before, self.a.read_bytes())
+
+    def test_delete_rejects_all_pages_and_invalid_selection(self):
+        for selection in ([0, 1, 2], [], [3], "0"):
+            with self.subTest(selection=selection), self.assertRaises(PageToolError):
+                delete_pages(self.a, self.out, selection)
+        self.assertFalse(self.out.exists())
+
+    def test_reorder_pages_requires_complete_permutation_and_preserves_source(self):
+        before = self.a.read_bytes()
+        reorder_pages(self.a, self.out, [2, 0, 1])
+        with self.out.open('rb') as stream:
+            self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages],
+                             [500.0, 300.0, 400.0])
+        self.assertEqual(before, self.a.read_bytes())
+
+    def test_reorder_rejects_duplicate_missing_and_out_of_range_indexes(self):
+        for order in ([0, 0, 2], [0, 1], [0, 1, 3], "1,1,3"):
+            with self.subTest(order=order), self.assertRaises(PageToolError):
+                reorder_pages(self.a, self.out, order)
+        self.assertFalse(self.out.exists())
 
     def test_crop_selected_pages_sets_cropbox_and_preserves_source(self):
         before = self.a.read_bytes()

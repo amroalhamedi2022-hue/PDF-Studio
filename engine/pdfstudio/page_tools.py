@@ -235,6 +235,77 @@ def _rotate_pages_direct(source: str | Path, output: str | Path,
     return dst
 
 
+def _delete_pages_direct(source: str | Path, output: str | Path,
+                        pages: Iterable[int] | str, digests: tuple[str, ...],
+                        max_pages: int, max_output_bytes: int) -> Path:
+    """Delete selected pages into a new PDF; never permit a zero-page result."""
+    src = _validated_source(source)
+    dst = _validated_output(output, (src,), allow_existing_staging=True)
+    with src.open("rb") as fh:
+        reader = PdfReader(fh, strict=False)
+        _preflight_reader(reader)
+        count = len(reader.pages)
+        if count < 1 or count > max_pages:
+            raise PageToolError("page count exceeds configured limit")
+        if isinstance(pages, str):
+            try:
+                selected = parse_page_ranges(pages, count)
+            except PageRangeError as exc:
+                raise PageToolError(str(exc)) from exc
+        else:
+            try:
+                selected = list(pages)
+            except TypeError as exc:
+                raise PageToolError("pages must be a range string or iterable of indexes") from exc
+            if not selected or any(not isinstance(i, int) or isinstance(i, bool) for i in selected):
+                raise PageToolError("provide one or more integer 0-based page indexes")
+        if any(i < 0 or i >= count for i in selected):
+            raise PageToolError(f"page index outside 0..{count - 1}")
+        removed = set(selected)
+        if len(removed) >= count:
+            raise PageToolError("cannot delete every page from a PDF")
+        writer = PdfWriter()
+        for index, page in enumerate(reader.pages):
+            if index not in removed:
+                writer.add_page(page)
+        _publish(writer, dst, (src,), digests, max_output_bytes)
+    return dst
+
+
+def _reorder_pages_direct(source: str | Path, output: str | Path,
+                          order: Iterable[int] | str, digests: tuple[str, ...],
+                          max_pages: int, max_output_bytes: int) -> Path:
+    """Reorder all pages using a complete 0-based permutation or one-based range string."""
+    src = _validated_source(source)
+    dst = _validated_output(output, (src,), allow_existing_staging=True)
+    with src.open("rb") as fh:
+        reader = PdfReader(fh, strict=False)
+        _preflight_reader(reader)
+        count = len(reader.pages)
+        if count < 1 or count > max_pages:
+            raise PageToolError("page count exceeds configured limit")
+        if isinstance(order, str):
+            try:
+                selected = parse_page_ranges(order, count)
+            except PageRangeError as exc:
+                raise PageToolError(str(exc)) from exc
+        else:
+            try:
+                selected = list(order)
+            except TypeError as exc:
+                raise PageToolError("order must be a range string or iterable of indexes") from exc
+        if (len(selected) != count
+                or any(not isinstance(i, int) or isinstance(i, bool) for i in selected)
+                or any(i < 0 or i >= count for i in selected)
+                or set(selected) != set(range(count))):
+            raise PageToolError("page order must be a permutation of every 0-based page index")
+        writer = PdfWriter()
+        for index in selected:
+            writer.add_page(reader.pages[index])
+        _publish(writer, dst, (src,), digests, max_output_bytes)
+    return dst
+
+
 def _crop_pages_direct(source: str | Path, output: str | Path,
                       pages: Iterable[int] | str, box: tuple[float, float, float, float],
                       digests: tuple[str, ...], max_pages: int,
@@ -312,6 +383,52 @@ def merge_pdfs(sources: Iterable[str | Path], output: str | Path, *,
                               free_space_margin_bytes=free_space_margin_bytes)
 
  
+
+
+def delete_pages(source: str | Path, output: str | Path,
+                 pages: Iterable[int] | str, *,
+                 timeout_seconds: float = 90.0, max_memory_mb: int = 768,
+                 max_pages: int = 10000,
+                 max_output_bytes: int = 1024 * 1024 * 1024,
+                 free_space_margin_bytes: int = 16 * 1024 * 1024) -> Path:
+    """Delete selected pages (0-based indexes or one-based inclusive range string).
+
+    Deleting every page is rejected. The source remains untouched and the output
+    is published only after the bounded worker succeeds.
+    """
+    from .page_isolation import run_page_operation
+    if isinstance(pages, str):
+        selection = pages
+    else:
+        try:
+            selection = list(pages)
+        except TypeError as exc:
+            raise PageToolError("pages must be a range string or iterable of indexes") from exc
+    return run_page_operation("delete", (source,), output, selection,
+                              timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+                              max_pages=max_pages, max_output_bytes=max_output_bytes,
+                              free_space_margin_bytes=free_space_margin_bytes)
+
+
+def reorder_pages(source: str | Path, output: str | Path,
+                  order: Iterable[int] | str, *,
+                  timeout_seconds: float = 90.0, max_memory_mb: int = 768,
+                  max_pages: int = 10000,
+                  max_output_bytes: int = 1024 * 1024 * 1024,
+                  free_space_margin_bytes: int = 16 * 1024 * 1024) -> Path:
+    """Reorder all pages by a complete 0-based permutation or one-based range string."""
+    from .page_isolation import run_page_operation
+    if isinstance(order, str):
+        selection = order
+    else:
+        try:
+            selection = list(order)
+        except TypeError as exc:
+            raise PageToolError("order must be a range string or iterable of indexes") from exc
+    return run_page_operation("reorder", (source,), output, selection,
+                              timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+                              max_pages=max_pages, max_output_bytes=max_output_bytes,
+                              free_space_margin_bytes=free_space_margin_bytes)
 
 def crop_pages(source: str | Path, output: str | Path,
                box: tuple[float, float, float, float],
