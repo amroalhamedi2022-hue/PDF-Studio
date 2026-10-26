@@ -31,6 +31,16 @@ class PageRangeTests(unittest.TestCase):
             with self.subTest(count=count), self.assertRaises(PageRangeError):
                 parse_page_ranges("1", count)
 
+    def test_selection_expansion_is_bounded_including_duplicates_and_all(self):
+        for spec in ("1-3", "1,1,1", "all"):
+            with self.subTest(spec=spec), self.assertRaises(PageRangeError):
+                parse_page_ranges(spec, 3, max_selections=2)
+        for cap in (0, -1, True, 1.5):
+            with self.subTest(cap=cap), self.assertRaises(PageRangeError):
+                parse_page_ranges("1", 3, max_selections=cap)
+        with self.assertRaises(PageRangeError):
+            parse_page_ranges(",".join(["1"] * 100), 3, max_selections=2)
+
     def test_whitespace_and_single_page(self):
         self.assertEqual(parse_page_ranges(" 2 , 3- ", 4), (1, 2, 3))
 

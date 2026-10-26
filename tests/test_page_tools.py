@@ -149,6 +149,19 @@ class PageToolsTests(unittest.TestCase):
             extract_pages(self.a, self.out, [])
         self.assertFalse(self.out.exists())
 
+    def test_extract_bounds_iterable_materialization_before_worker_spawn(self):
+        consumed = []
+
+        def oversized_selection():
+            for index in range(100):
+                consumed.append(index)
+                yield index
+
+        with self.assertRaises(PageToolError):
+            extract_pages(self.a, self.out, oversized_selection(), max_pages=3)
+        self.assertEqual(len(consumed), 4)  # limit + one sentinel only
+        self.assertFalse(self.out.exists())
+
     def test_output_byte_cap_fails_closed_without_final_output(self):
         before = self.a.read_bytes()
         with self.assertRaises(PageToolError):
@@ -237,6 +250,41 @@ class PageToolsTests(unittest.TestCase):
                 split_pdf(self.a, out_dir, ["1"], base_name=name)
         with self.assertRaises(PageToolError):
             split_pdf(self.a, out_dir, [["0"]] * 101, base_name="many")
+        self.assertEqual(list(out_dir.iterdir()), [])
+
+    def test_split_pdf_bounds_infinite_group_iterable(self):
+        out_dir = self.root / "parts"
+        out_dir.mkdir()
+        consumed = []
+
+        def infinite_groups():
+            index = 0
+            while True:
+                consumed.append(index)
+                yield "1"
+                index += 1
+
+        with self.assertRaises(PageToolError):
+            split_pdf(self.a, out_dir, infinite_groups(), base_name="bounded")
+        self.assertEqual(len(consumed), 101)  # fixed group cap + sentinel
+        self.assertEqual(list(out_dir.iterdir()), [])
+
+    def test_split_pdf_bounds_infinite_page_group(self):
+        out_dir = self.root / "parts"
+        out_dir.mkdir()
+        consumed = []
+
+        def infinite_indexes():
+            index = 0
+            while True:
+                consumed.append(index)
+                yield 0
+                index += 1
+
+        with self.assertRaises(PageToolError):
+            split_pdf(self.a, out_dir, [infinite_indexes()], base_name="bounded",
+                      max_pages=3)
+        self.assertEqual(len(consumed), 4)  # configured page cap + sentinel
         self.assertEqual(list(out_dir.iterdir()), [])
 
     def test_split_pdf_total_output_cap_fails_without_final_outputs(self):

@@ -13,6 +13,7 @@ import re
 import stat
 import tempfile
 from contextlib import ExitStack
+from itertools import islice
 from pathlib import Path
 from typing import Iterable
 
@@ -24,6 +25,25 @@ from .jobs import sha256_file
 
 class PageToolError(ValueError):
     """PDF page operation rejected without modifying the source."""
+
+
+def _bounded_items(values, limit: int, label: str) -> list:
+    """Materialize at most limit+1 items, rejecting oversized or infinite iterables.
+
+    The extra item is only a sentinel proving the input exceeded the contract;
+    it prevents an untrusted or accidental infinite generator from exhausting
+    parent-process memory before the isolated PDF worker starts.
+    """
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise ValueError("item limit must be a positive integer")
+    try:
+        iterator = iter(values)
+    except TypeError as exc:
+        raise PageToolError(f"{label} must be iterable") from exc
+    items = list(islice(iterator, limit + 1))
+    if len(items) > limit:
+        raise PageToolError(f"{label} exceeds configured limit of {limit} items")
+    return items
 
 
 def _validated_source(path: str | Path) -> Path:
@@ -165,7 +185,7 @@ def _extract_pages_direct(source: str | Path, output: str | Path, pages: Iterabl
             raise PageToolError('page count exceeds configured limit')
         if isinstance(pages, str):
             try:
-                selected = parse_page_ranges(pages, count)
+                selected = parse_page_ranges(pages, count, max_selections=max_pages)
             except PageRangeError as exc:
                 raise PageToolError(str(exc)) from exc
         if any(i < 0 or i >= count for i in selected):
@@ -219,7 +239,7 @@ def _rotate_pages_direct(source: str | Path, output: str | Path,
             raise PageToolError("page count exceeds configured limit")
         if isinstance(pages, str):
             try:
-                selected = parse_page_ranges(pages, count)
+                selected = parse_page_ranges(pages, count, max_selections=max_pages)
             except PageRangeError as exc:
                 raise PageToolError(str(exc)) from exc
         else:
@@ -252,7 +272,7 @@ def _delete_pages_direct(source: str | Path, output: str | Path,
             raise PageToolError("page count exceeds configured limit")
         if isinstance(pages, str):
             try:
-                selected = parse_page_ranges(pages, count)
+                selected = parse_page_ranges(pages, count, max_selections=max_pages)
             except PageRangeError as exc:
                 raise PageToolError(str(exc)) from exc
         else:
@@ -289,7 +309,7 @@ def _reorder_pages_direct(source: str | Path, output: str | Path,
             raise PageToolError("page count exceeds configured limit")
         if isinstance(order, str):
             try:
-                selected = parse_page_ranges(order, count)
+                selected = parse_page_ranges(order, count, max_selections=max_pages)
             except PageRangeError as exc:
                 raise PageToolError(str(exc)) from exc
         else:
@@ -329,7 +349,7 @@ def _crop_pages_direct(source: str | Path, output: str | Path,
             raise PageToolError("page count exceeds configured limit")
         if isinstance(pages, str):
             try:
-                selected = parse_page_ranges(pages, count)
+                selected = parse_page_ranges(pages, count, max_selections=max_pages)
             except PageRangeError as exc:
                 raise PageToolError(str(exc)) from exc
         else:
@@ -366,7 +386,8 @@ def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int] |
                   free_space_margin_bytes: int = 16 * 1024 * 1024) -> Path:
     """Extract pages with an output ceiling and preflight/reserved disk budget."""
     from .page_isolation import run_page_operation
-    selection = pages if isinstance(pages, str) else list(pages)
+    selection = (pages if isinstance(pages, str)
+                 else _bounded_items(pages, max_pages, "page selection"))
     return run_page_operation("extract", (source,), output, selection,
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
                               max_pages=max_pages, max_output_bytes=max_output_bytes,
@@ -403,10 +424,7 @@ def delete_pages(source: str | Path, output: str | Path,
     if isinstance(pages, str):
         selection = pages
     else:
-        try:
-            selection = list(pages)
-        except TypeError as exc:
-            raise PageToolError("pages must be a range string or iterable of indexes") from exc
+        selection = _bounded_items(pages, max_pages, "page selection")
     return run_page_operation("delete", (source,), output, selection,
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
                               max_pages=max_pages, max_output_bytes=max_output_bytes,
@@ -424,10 +442,7 @@ def reorder_pages(source: str | Path, output: str | Path,
     if isinstance(order, str):
         selection = order
     else:
-        try:
-            selection = list(order)
-        except TypeError as exc:
-            raise PageToolError("order must be a range string or iterable of indexes") from exc
+        selection = _bounded_items(order, max_pages, "page order")
     return run_page_operation("reorder", (source,), output, selection,
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
                               max_pages=max_pages, max_output_bytes=max_output_bytes,
@@ -450,10 +465,7 @@ def crop_pages(source: str | Path, output: str | Path,
     if isinstance(pages, str):
         selection = pages
     else:
-        try:
-            selection = list(pages)
-        except TypeError as exc:
-            raise PageToolError("pages must be a range string or iterable of indexes") from exc
+        selection = _bounded_items(pages, max_pages, "page selection")
     return run_page_operation("crop", (source,), output, (selection, normalized_box),
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
                               max_pages=max_pages, max_output_bytes=max_output_bytes,
@@ -476,10 +488,7 @@ def rotate_pages(source: str | Path, output: str | Path,
     if isinstance(pages, str):
         selection = pages
     else:
-        try:
-            selection = list(pages)
-        except TypeError as exc:
-            raise PageToolError("pages must be a range string or iterable of indexes") from exc
+        selection = _bounded_items(pages, max_pages, "page selection")
     return run_page_operation("rotate", (source,), output, (selection, degrees),
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
                               max_pages=max_pages, max_output_bytes=max_output_bytes,
@@ -508,11 +517,8 @@ def split_pdf(source: str | Path, output_dir: str | Path,
     """
     if isinstance(ranges, (str, bytes, bytearray)):
         raise PageToolError("ranges must be an iterable of page groups, not one range")
-    try:
-        groups = list(ranges)
-    except TypeError as exc:
-        raise PageToolError("ranges must be an iterable of page groups") from exc
-    if not groups or len(groups) > 100:
+    groups = _bounded_items(ranges, 100, "split groups")
+    if not groups:
         raise PageToolError("split requires between 1 and 100 page groups")
 
     normalized: list[Iterable[int] | str] = []
@@ -522,10 +528,7 @@ def split_pdf(source: str | Path, output_dir: str | Path,
                 raise PageToolError("split page ranges must be nonempty")
             normalized.append(group)
             continue
-        try:
-            selected = list(group)
-        except TypeError as exc:
-            raise PageToolError("each split group must be a range string or iterable of indexes") from exc
+        selected = _bounded_items(group, max_pages, "split page group")
         if not selected or any(not isinstance(i, int) or isinstance(i, bool) for i in selected):
             raise PageToolError("each split group must contain integer 0-based page indexes")
         normalized.append(selected)

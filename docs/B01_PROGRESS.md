@@ -531,3 +531,11 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 **Build decision:** no APK/EXE build. The tested behavior is the cross-platform Python page-range/output transaction; source/integration CI directly answers the split correctness and rollback question.
 
 **Next:** keep B01 active. The next page-tool gaps are split by bookmarks/size and a more efficient single-pass splitter; Android/Windows UI and visual/device acceptance, realistic large/scanned files, OCR and crash/reboot recovery remain NOT TESTED. Do not start B02.
+
+
+### 2026-10-27 — bounded page-selection input materialization (CI pending)
+
+- Hardened B01 page-operation APIs against oversized or infinite Python iterables: extraction, rotation, crop, delete, reorder and split consume at most the configured page/group cap plus one sentinel before rejecting input. Split's outer group count is capped at 100 before materialization; each integer-index group is capped by `max_pages`.
+- The one-based page-range parser checks expanded selection size before allocating range/repeated-page entries, including `all`, and accepts an explicit `max_selections` ceiling. It also rejects overlong comma-separated selection text before token-list allocation. Intentional duplicate-page semantics remain supported within the configured cap.
+- Regression tests assert rejection after consuming only cap+1 items and before worker spawn/publication; coverage includes infinite group and page-index generators, repeated ranges and oversized range text.
+- Exact code/test checkpoint: CI pending at commit creation. These source-level resource-bound checks do not establish real >=2 GiB PDF, OCR, hostile-input sandbox, Android/Windows GUI, or device acceptance. B01 remains OPEN. Google Drive Handoff sync is NOT AVAILABLE in this runtime.
