@@ -57,15 +57,18 @@ def _validated_output(path: str | Path, sources: Iterable[Path]) -> Path:
 
 
 class _CappedWriter:
-    """Delegate a binary stream while rejecting writes beyond a file-size cap."""
+    """Delegate a preallocated binary stream while enforcing the output ceiling."""
 
     def __init__(self, stream, max_bytes: int):
         self._stream = stream
         self._max_bytes = max_bytes
-        position = stream.tell()
-        stream.seek(0, os.SEEK_END)
-        self._length = stream.tell()
-        stream.seek(position)
+        # The parent preallocates the staging file. Track bytes actually written,
+        # not its reserved length, so the final PDF can be truncated accurately.
+        self._length = 0
+
+    @property
+    def length(self) -> int:
+        return self._length
 
     def write(self, data):
         position = self._stream.tell()
@@ -82,13 +85,19 @@ class _CappedWriter:
 
 def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
              digests: tuple[str, ...], max_output_bytes: int) -> None:
-    # The output path is inside the isolated worker's private temporary directory.
-    # Writing once avoids a second full-size .part copy for large documents.
+    # The parent has already reserved this private staging file on the same
+    # filesystem as the destination. Reuse it instead of allocating a second
+    # full-size temporary copy.
     created = False
     try:
-        with output.open("xb") as fh:
+        with output.open("r+b") as fh:
             created = True
-            writer.write(_CappedWriter(fh, max_output_bytes))
+            fh.seek(0)
+            capped = _CappedWriter(fh, max_output_bytes)
+            writer.write(capped)
+            if capped.length < 5:
+                raise PageToolError("PDF output is empty or truncated")
+            fh.truncate(capped.length)
             fh.flush()
             os.fsync(fh.fileno())
         if any(sha256_file(src) != digest for src, digest in zip(sources, digests)):
@@ -160,21 +169,25 @@ def _merge_pdfs_direct(sources: Iterable[str | Path], output: str | Path,
 def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int] | str,
                   *, timeout_seconds: float = 90.0, max_memory_mb: int = 768,
                   max_pages: int = 10000,
-                  max_output_bytes: int = 1024 * 1024 * 1024) -> Path:
-    """Extract to a private staged PDF with a configurable output-byte ceiling."""
+                  max_output_bytes: int = 1024 * 1024 * 1024,
+                  free_space_margin_bytes: int = 16 * 1024 * 1024) -> Path:
+    """Extract pages with an output ceiling and preflight/reserved disk budget."""
     from .page_isolation import run_page_operation
     selection = pages if isinstance(pages, str) else list(pages)
     return run_page_operation("extract", (source,), output, selection,
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
-                              max_pages=max_pages, max_output_bytes=max_output_bytes)
+                              max_pages=max_pages, max_output_bytes=max_output_bytes,
+                              free_space_margin_bytes=free_space_margin_bytes)
 
 
 def merge_pdfs(sources: Iterable[str | Path], output: str | Path, *,
                timeout_seconds: float = 90.0, max_memory_mb: int = 768,
                max_pages: int = 10000,
-               max_output_bytes: int = 1024 * 1024 * 1024) -> Path:
-    """Merge to a private staged PDF with a configurable output-byte ceiling."""
+               max_output_bytes: int = 1024 * 1024 * 1024,
+               free_space_margin_bytes: int = 16 * 1024 * 1024) -> Path:
+    """Merge pages with an output ceiling and preflight/reserved disk budget."""
     from .page_isolation import run_page_operation
     return run_page_operation("merge", tuple(sources), output,
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
-                              max_pages=max_pages, max_output_bytes=max_output_bytes)
+                              max_pages=max_pages, max_output_bytes=max_output_bytes,
+                              free_space_margin_bytes=free_space_margin_bytes)
