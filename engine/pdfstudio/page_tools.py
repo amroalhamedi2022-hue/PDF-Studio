@@ -1,15 +1,13 @@
 """B01 loss-aware PDF page operations; no OCR or arbitrary content editing.
 
-This adapter intentionally refuses encrypted and *apparently* signed input,
-never replaces the original, and atomically publishes a new PDF using a
-same-directory temporary file and a no-clobber hard link. Hard-link publication
-requires a filesystem supporting os.link, so unsupported filesystems fail safe.
+This adapter refuses encrypted and apparently signed input, writes only to a
+private worker staging path under a configurable byte cap, and leaves final
+no-clobber publication to the parent process.
 """
 
 from __future__ import annotations
 
 import os
-import tempfile
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Iterable
@@ -58,26 +56,55 @@ def _validated_output(path: str | Path, sources: Iterable[Path]) -> Path:
     return dst
 
 
-def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...], digests: tuple[str, ...]) -> None:
-    fd, temporary = tempfile.mkstemp(prefix=".pdfstudio-", suffix=".part", dir=output.parent)
+class _CappedWriter:
+    """Delegate a binary stream while rejecting writes beyond a file-size cap."""
+
+    def __init__(self, stream, max_bytes: int):
+        self._stream = stream
+        self._max_bytes = max_bytes
+        position = stream.tell()
+        stream.seek(0, os.SEEK_END)
+        self._length = stream.tell()
+        stream.seek(position)
+
+    def write(self, data):
+        position = self._stream.tell()
+        projected_size = max(self._length, position + len(data))
+        if projected_size > self._max_bytes:
+            raise PageToolError("PDF output exceeds configured byte limit")
+        written = self._stream.write(data)
+        self._length = max(self._length, position + written)
+        return written
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
+             digests: tuple[str, ...], max_output_bytes: int) -> None:
+    # The output path is inside the isolated worker's private temporary directory.
+    # Writing once avoids a second full-size .part copy for large documents.
+    created = False
     try:
-        with os.fdopen(fd, "wb") as fh:
-            writer.write(fh)
+        with output.open("xb") as fh:
+            created = True
+            writer.write(_CappedWriter(fh, max_output_bytes))
             fh.flush()
             os.fsync(fh.fileno())
         if any(sha256_file(src) != digest for src, digest in zip(sources, digests)):
-            raise PageToolError('source changed during PDF operation')
-        # Atomic no-clobber for a new file, unlike os.replace which overwrites.
-        os.link(temporary, output)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+            raise PageToolError("source changed during PDF operation")
+    except BaseException:
+        if created:
+            try:
+                output.unlink()
+            except FileNotFoundError:
+                pass
+        raise
 
 
 def _extract_pages_direct(source: str | Path, output: str | Path, pages: Iterable[int] | str,
-                          digests: tuple[str, ...], max_pages: int) -> Path:
+                          digests: tuple[str, ...], max_pages: int,
+                          max_output_bytes: int) -> Path:
     """Extract 0-based indices or one-based inclusive text ranges to a new PDF."""
     src = _validated_source(source)
     dst = _validated_output(output, (src,))
@@ -101,12 +128,13 @@ def _extract_pages_direct(source: str | Path, output: str | Path, pages: Iterabl
         writer = PdfWriter()
         for index in selected:
             writer.add_page(reader.pages[index])
-        _publish(writer, dst, (src,), digests)
+        _publish(writer, dst, (src,), digests, max_output_bytes)
     return dst
 
 
 def _merge_pdfs_direct(sources: Iterable[str | Path], output: str | Path,
-                       digests: tuple[str, ...], max_pages: int) -> Path:
+                       digests: tuple[str, ...], max_pages: int,
+                       max_output_bytes: int) -> Path:
     """Merge page ranges of all source PDFs in order, into a new PDF."""
     inputs = [_validated_source(p) for p in sources]
     if len(inputs) < 2:
@@ -125,26 +153,28 @@ def _merge_pdfs_direct(sources: Iterable[str | Path], output: str | Path,
                 raise PageToolError('total page count exceeds configured limit')
             for page in reader.pages:
                 writer.add_page(page)
-        _publish(writer, dst, tuple(inputs), digests)
+        _publish(writer, dst, tuple(inputs), digests, max_output_bytes)
     return dst
 
 
 def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int] | str,
                   *, timeout_seconds: float = 90.0, max_memory_mb: int = 768,
-                  max_pages: int = 10000) -> Path:
-    """Extract into a new PDF in a resource-limited child, never in the UI process."""
+                  max_pages: int = 10000,
+                  max_output_bytes: int = 1024 * 1024 * 1024) -> Path:
+    """Extract to a private staged PDF with a configurable output-byte ceiling."""
     from .page_isolation import run_page_operation
     selection = pages if isinstance(pages, str) else list(pages)
     return run_page_operation("extract", (source,), output, selection,
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
-                              max_pages=max_pages)
+                              max_pages=max_pages, max_output_bytes=max_output_bytes)
 
 
 def merge_pdfs(sources: Iterable[str | Path], output: str | Path, *,
                timeout_seconds: float = 90.0, max_memory_mb: int = 768,
-               max_pages: int = 10000) -> Path:
-    """Merge into a new PDF in a resource-limited child, preserving all sources."""
+               max_pages: int = 10000,
+               max_output_bytes: int = 1024 * 1024 * 1024) -> Path:
+    """Merge to a private staged PDF with a configurable output-byte ceiling."""
     from .page_isolation import run_page_operation
     return run_page_operation("merge", tuple(sources), output,
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
-                              max_pages=max_pages)
+                              max_pages=max_pages, max_output_bytes=max_output_bytes)

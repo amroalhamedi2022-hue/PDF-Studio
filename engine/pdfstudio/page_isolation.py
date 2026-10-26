@@ -41,7 +41,8 @@ def _require_deadline(deadline: float) -> None:
         raise TimeoutError("PDF operation deadline exceeded")
 
 
-def _worker(pipe, gate, action, sources, output, selection, digests, memory_bytes, cpu_seconds, max_pages):
+def _worker(pipe, gate, action, sources, output, selection, digests, memory_bytes,
+            cpu_seconds, max_pages, max_output_bytes):
     try:
         if os.name == "nt":
             # Parent assigns the Job Object before releasing this gate.
@@ -52,7 +53,10 @@ def _worker(pipe, gate, action, sources, output, selection, digests, memory_byte
             resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
             resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
             resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-            resource.setrlimit(resource.RLIMIT_FSIZE, (1024 * 1024 * 1024, 1024 * 1024 * 1024))
+            _, hard_file_size = resource.getrlimit(resource.RLIMIT_FSIZE)
+            file_size_soft = (max_output_bytes if hard_file_size == resource.RLIM_INFINITY
+                              else min(max_output_bytes, hard_file_size))
+            resource.setrlimit(resource.RLIMIT_FSIZE, (file_size_soft, hard_file_size))
         import logging
         logging.getLogger("pypdf").setLevel(logging.CRITICAL)
         from .page_tools import _extract_pages_direct, _merge_pdfs_direct, PageToolError
@@ -61,9 +65,10 @@ def _worker(pipe, gate, action, sources, output, selection, digests, memory_byte
             pipe.send(("error", "source-changed"))
             return
         if action == "extract":
-            _extract_pages_direct(sources[0], output, selection, digests, max_pages)
+            _extract_pages_direct(sources[0], output, selection, digests,
+                                  max_pages, max_output_bytes)
         elif action == "merge":
-            _merge_pdfs_direct(sources, output, digests, max_pages)
+            _merge_pdfs_direct(sources, output, digests, max_pages, max_output_bytes)
         else:
             pipe.send(("error", "operation"))
             return
@@ -86,7 +91,8 @@ def _worker(pipe, gate, action, sources, output, selection, digests, memory_byte
 
 def run_page_operation(action: str, sources, output, selection=None, *,
                        timeout_seconds: float = 90.0, max_memory_mb: int = 768,
-                       max_pages: int = 10000) -> Path:
+                       max_pages: int = 10000,
+                       max_output_bytes: int = 1024 * 1024 * 1024) -> Path:
     from .page_tools import PageToolError, _validated_output, _validated_source
     if os.name not in ("posix", "nt"):
         raise PageToolError("isolated page tools unavailable on this host")
@@ -99,7 +105,8 @@ def run_page_operation(action: str, sources, output, selection=None, *,
             raise PageToolError("OS resource limits unavailable") from exc
     if action not in ("extract", "merge"):
         raise ValueError("unsupported operation")
-    for key, value in (("max_memory_mb", max_memory_mb), ("max_pages", max_pages)):
+    for key, value in (("max_memory_mb", max_memory_mb), ("max_pages", max_pages),
+                       ("max_output_bytes", max_output_bytes)):
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise ValueError(f"{key} must be a positive integer")
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) \
@@ -143,7 +150,7 @@ def run_page_operation(action: str, sources, output, selection=None, *,
         proc = ctx.Process(target=_worker, args=(child, gate, action, tuple(map(str, resolved)),
                            str(staged), selection, digests,
                            max_memory_mb * 1024 * 1024, max(2, math.ceil(timeout_seconds) + 1),
-                           max_pages), daemon=True)
+                           max_pages, max_output_bytes), daemon=True)
         # The operation deadline includes process startup and Windows Job
         # Object assignment, not just the wait for the worker's first response.
         try:

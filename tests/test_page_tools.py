@@ -56,6 +56,20 @@ class PageToolsTests(unittest.TestCase):
             extract_pages(self.a, self.out, [])
         self.assertFalse(self.out.exists())
 
+    def test_output_byte_cap_fails_closed_without_final_output(self):
+        before = self.a.read_bytes()
+        with self.assertRaises(PageToolError):
+            extract_pages(self.a, self.out, [0], max_output_bytes=128)
+        self.assertEqual(self.a.read_bytes(), before)
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
+    def test_output_byte_cap_requires_positive_integer(self):
+        for limit in (0, -1, True, 1.5):
+            with self.subTest(limit=limit), self.assertRaises(ValueError):
+                extract_pages(self.a, self.out, [0], max_output_bytes=limit)
+        self.assertFalse(self.out.exists())
+
     def test_original_as_target_refused(self):
         before = self.a.read_bytes()
         with self.assertRaises(PageToolError):
