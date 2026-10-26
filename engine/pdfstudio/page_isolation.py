@@ -106,6 +106,9 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                            str(staged), selection, digests,
                            max_memory_mb * 1024 * 1024, max(2, math.ceil(timeout_seconds) + 1),
                            max_pages), daemon=True)
+        # The operation deadline includes process startup and Windows Job
+        # Object assignment, not just the wait for the worker's first response.
+        deadline = time.monotonic() + timeout_seconds
         try:
             proc.start()
             child.close()
@@ -115,8 +118,8 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                 except WindowsJobError as exc:
                     raise PageToolError("Windows worker could not be confined") from exc
                 gate.set()
-            deadline = time.monotonic() + timeout_seconds
-            if not parent.poll(timeout_seconds):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not parent.poll(remaining):
                 raise PageToolError("isolated page operation timed out")
             try:
                 response = parent.recv()
