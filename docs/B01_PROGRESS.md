@@ -427,10 +427,20 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 
 **Regression tests:** commit [`dd0106ff36bbb58c4b9e5abdd0220451bccc4eb4`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/dd0106ff36bbb58c4b9e5abdd0220451bccc4eb4) adds two synthetic tests: worker-lock hard-link rejection and artifact-directory-lock hard-link rejection. Both assert the unrelated target bytes and two-link identity remain unchanged after rejection. Hosts that cannot create hard links explicitly skip the test.
 
-**Exact-head CI at checkpoint time:** PR source-check run [#40367425044](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40367425044) for test SHA `dd0106ff36bbb58c4b9e5abdd0220451bccc4eb4` was **PENDING** when this checkpoint was written; no PASS is claimed until GitHub reports completion. The workflow discovers tests via `python -m unittest discover -s tests -v` on Ubuntu and Windows.
+**Exact-checkpoint CI:** push run [#40367605089](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40367605089) on checkpoint SHA `087dd23c547ad01f531823aede8cadef11ccc59a` completed **PASS** on Ubuntu and Windows. Both hosts ran **130 tests**; Ubuntu skipped four Windows-only tests, and both hard-link regressions passed on both hosts. Ubuntu also passed 100/1000/5000-page synthetic native-text checkpoints, interruption/resume/FTS integrity and the 64 MiB disk-backed extraction. The 5000-page synthetic input was 2,638,282 bytes; it interrupted after 2,500 pages, resumed the remaining 2,500 in 6.062 s, reused all 5,000 completed checkpoints in 0.769 s, and preserved the source SHA. Parent/max-child peak RSS were 53.22/53.95 MiB (not summed). Windows passed the 100-page smoke and 64 MiB disk-backed extraction; 1000/5000-page benchmarks are Linux-only. These are synthetic born-digital workloads, not OCR or realistic >=2 GiB PDFs.
 
 **Build decision:** no APK/EXE build. This change concerns Python local filesystem lock semantics; direct cross-platform source tests are the relevant evidence and application packaging would not answer the hard-link question more strongly.
 
 **Google Drive handoff:** **FAILED / NOT AVAILABLE** in this runtime because no Google Docs/Drive write connector is exposed. The specified `PDF Studio — HANDOFF` document was not updated; no sync success is claimed.
 
 **Next within B01:** obtain exact-head Ubuntu/Windows CI results, then continue with publication-race and concurrent disk-exhaustion tests plus realistic large-file evidence. Keep B01 open; do not start B02.
+
+
+### Verification follow-up — exact checkpoint PASS (2026-10-26)
+
+- The pending note above is superseded by exact-head push CI [#40367605089](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40367605089), checkpoint SHA `087dd23c547ad01f531823aede8cadef11ccc59a`: **PASS** on Ubuntu and Windows.
+- Both hosts: `python -m compileall -q engine tests` PASS; complete unit/source suite **130 tests PASS** (Ubuntu reports four Windows-only skips; Windows runs all 130). Both hard-link regression cases passed on both hosts.
+- Ubuntu synthetic 1000-page run: 526,269-byte PDF, FTS integrity PASS, source unchanged, 0.532 s indexing, 36.06 MiB parent and 35.77 MiB max-child peak RSS.
+- Ubuntu synthetic 5000-page interrupted/resume run: 2,638,282-byte PDF; interruption after 2500 pages (10.093 s), resume remaining 2500 (6.062 s), verified reuse of all 5000 (0.769 s), FTS integrity PASS, source unchanged, 53.22 MiB parent / 53.95 MiB max-child peak RSS.
+- Windows: 100-page smoke and 64 MiB disk-backed output reservation PASS. No Windows 1000/5000-page benchmark in this workflow.
+- Limits remain: generated native-text PDF only, not real Arabic/English OCR, not a realistic >=2 GiB corpus, not OS reboot recovery or a hostile-PDF sandbox, and not Android/Windows GUI/device acceptance. B01 remains OPEN; F04.03/F04.06 remain IN PROGRESS.
