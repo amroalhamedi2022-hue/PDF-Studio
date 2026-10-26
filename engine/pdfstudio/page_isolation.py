@@ -81,7 +81,10 @@ def _reserve_staging_file(path: Path, estimated_output_bytes: int) -> None:
     """Reserve the estimated output on the destination filesystem before parsing."""
     from .page_tools import PageToolError
 
-    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    except OSError as exc:
+        raise PageToolError("could not reserve estimated PDF output space") from exc
     try:
         if os.name == "posix":
             fallocate = getattr(os, "posix_fallocate", None)
