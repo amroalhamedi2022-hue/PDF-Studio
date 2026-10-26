@@ -20,10 +20,10 @@ Statuses: TODO, IN PROGRESS, PASS, FAIL, BLOCKED, NOT TESTED. A PASS requires te
 | F03.03 | Before/after compare and preview, reversible recipe, preview vs export profile; never destructively modify original without explicit save-as. | B02 | TODO | NOT TESTED |
 | F04.01 | Preflight: page count, estimated memory/disk, type, signatures/encryption, unsupported content, free space. | B03 | TODO | NOT TESTED |
 | F04.02 | Disk-backed batches + bounded workers + resource caps for CPU/RAM/GPU and temporary disk; configurable page batch size. | B03 | TODO | NOT TESTED |
-| F04.03 | Checkpoint per page/block and pipeline stage; pause/cancel/resume after crash/reboot; idempotent stages and fingerprint checks for changed inputs. | B03 | TODO | NOT TESTED |
+| F04.03 | Checkpoint per page/block and pipeline stage; pause/cancel/resume after crash/reboot; idempotent stages and fingerprint checks for changed inputs. | B03 | IN PROGRESS | Synthetic 5000-page abrupt-process crash/resume + FTS CI PASS; OS reboot/device recovery NOT TESTED. See docs/B01_PROGRESS.md. |
 | F04.04 | Retry only failed pages; isolated recovery; progress pages/jobs/ETA (qualified estimate); actionable error log. | B03 | TODO | NOT TESTED |
 | F04.05 | Streaming assembly, atomic final export, preserve page order, verify counts and text layer, hash original and output; restore/cleanup temp cache safely. | B03 | TODO | NOT TESTED |
-| F04.06 | Test corpus: 10/100/1000/5000 pages, realistic file sizes including >=2 GB where hardware/storage permits; no artificial file/page hard limits, document legitimate resource constra | B03 | TODO | NOT TESTED |
+| F04.06 | Test corpus: 10/100/1000/5000 pages, realistic file sizes including >=2 GB where hardware/storage permits; no artificial file/page hard limits, document legitimate resource constraints. | B03 | IN PROGRESS | Synthetic 100/1000/5000-page CI PASS; realistic >=2 GB and scanned PDFs NOT TESTED. See docs/B01_PROGRESS.md. |
 | F05.01 | Multi-column layout, reading order, paragraphs, headings, list structure, footnotes, header/footer, page numbers, table of contents/bookmarks recovery. | B04 | TODO | NOT TESTED |
 | F05.02 | Table detection, multi-page tables, row/col/cell reconstruction; export CSV/XLSX; cell review UI. | B04 | TODO | NOT TESTED |
 | F05.03 | Printed/math formula detection and LaTeX export; equation/block alignment review. | B04 | TODO | NOT TESTED |

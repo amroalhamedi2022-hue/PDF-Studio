@@ -254,4 +254,19 @@ Implement page ranges, metadata browser, safe file IO, and parser-isolation limi
 
 **Acceptance / limits:** this is an explicit cap on checkpoint artifact growth, not a 2 GB PDF acceptance test. Genuine OCR, searchable PDF overlay, realistic 2 GB corpus, reboot recovery, hostile-input sandboxing, Android APK/SAF, Windows EXE and device UI remain **NOT TESTED**. No app build was run: this Python/SQLite storage-limit contract is directly testable through source CI. PR #2 stays open/unmerged; `main` is unchanged.
 
-**Next within B01:** verify exact-head Linux and Windows CI; then add a bounded, safe policy for orphan temporary artifacts and continue the large-file disk/RAM profile. Do not open B02 until B01's resource, integrity and recovery gates are independently accepted. Google Drive Handoff sync is unavailable in this runtime and has not been claimed.
+**Next within B01:** safe orphan cleanup is implemented and verified on Linux/Windows. Continue with realistic large-file disk/RAM measurements, bounded parser behavior, and stronger worker ownership/recovery evidence. Do not open B02 until B01's resource, integrity and recovery gates are independently accepted. Google Drive Handoff sync is unavailable in this runtime and has not been claimed.
+
+
+## B01 follow-up — 2026-10-26: safe cleanup of orphaned native-text artifacts
+
+**Milestone:** B01 Resource-Bounded PDF Core remains OPEN. The native-text stage now serializes cooperating writers and cleanup with a persistent local artifact-directory lock, removes only stale unreferenced `page-*.txt` / `.text-*.tmp` regular files after a 24-hour grace period, protects all journal-referenced paths and hard-link aliases, rechecks file identity/size/mtime before unlink, and fsyncs the directory after successful rename/removal on POSIX. Recent orphan bytes and failed deletions count against the existing checkpoint byte budget; this prevents an abrupt crash from silently escaping disk accounting. Cleanup does not recurse and is not a hostile-directory security sandbox.
+
+**Production + regression commit:** `5e7a420936fcf13aa3d0f34f124baa642d5eb5a6`; cross-platform path assertion fix: `baec89cdd1303709540db36359c0f746ceb7db91`.
+
+**Exact-head CI:** [run #40258626157](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40258626157) **PASS** on Linux + Windows at `baec89cdd1303709540db36359c0f746ceb7db91`. Windows: **114/114 tests PASS**. Linux: **114 tests, 4 Windows-only tests skipped, remaining tests PASS**. Both hosts passed the 100-page smoke; Linux passed 1000-page and 5000-page checkpoint/crash/resume/FTS checks. The first attempt exposed only a Windows 8.3-vs-long-temp-path mismatch in a test assertion; the assertion now compares normalized basenames and the exact-head run passes.
+
+**Measured Linux 5000-page evidence:** synthetic born-digital PDF `2,638,282` bytes; 2,500 checkpoints persisted before intentional parent exit code 23; resume processed the remaining 2,500 pages in `7.126 s`; a completed-stage pass reused all 5,000 in `0.785 s`; checkpoint index step `0.808 s`; 5,000 pages indexed and FTS integrity **PASS**. Source SHA remained unchanged. Parent/max-child peak RSS `53.28/53.96 MiB` are separate process high-water marks, not aggregate memory. This is not OCR and not a realistic 2 GB corpus.
+
+**Acceptance status:** F04.03 and F04.06 are **IN PROGRESS**, not PASS. Realistic >=2 GB files, scanned PDFs, OS reboot recovery, hostile-input sandboxing, Android/SAF, Windows GUI/EXE and device acceptance remain **NOT TESTED**. No APK/EXE build was useful for this Python/filesystem/SQLite contract; the cross-platform source suite directly exercises it. PR #2 remains draft/open/unmerged; `main` unchanged. Google Drive Handoff write connector remains unavailable in this runtime; no successful sync is claimed.
+
+**Next:** remain in B01; measure realistic disk/RAM behavior and strengthen safe recovery/ownership, then independently recheck the B01 exit gates before opening B02.
