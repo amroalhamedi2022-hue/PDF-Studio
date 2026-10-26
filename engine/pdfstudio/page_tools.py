@@ -70,6 +70,13 @@ class _CappedWriter:
     def length(self) -> int:
         return self._length
 
+    def seek(self, offset, whence=os.SEEK_SET):
+        # The backing file is preallocated, so its physical EOF is only a
+        # reservation. Expose the logical output EOF to writers that seek there.
+        if whence == os.SEEK_END:
+            return self._stream.seek(self._length + offset, os.SEEK_SET)
+        return self._stream.seek(offset, whence)
+
     def write(self, data):
         position = self._stream.tell()
         projected_size = max(self._length, position + len(data))
