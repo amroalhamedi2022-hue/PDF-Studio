@@ -47,6 +47,11 @@ jobs:
         env:
           PYTHONPATH: engine
         run: python benchmarks/synthetic_pdf_bench.py --pages 100 --chars-per-page 256
+
+      - name: Disk-backed PDF output reservation smoke (64 MiB)
+        env:
+          PYTHONPATH: engine
+        run: python benchmarks/disk_space_preflight_bench.py --size-mib 64 --timeout-seconds 180
       - name: Synthetic native-PDF scale (1000 pages; Linux only)
         if: runner.os != 'Windows'
         env:
