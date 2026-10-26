@@ -214,8 +214,9 @@ class NativeTextStageTests(unittest.TestCase):
         report = cleanup_orphaned_native_text_artifacts(
             self.journal, self.artifacts, min_age_seconds=3600
         )
-        self.assertIn(str(stale_page), report["removed"])
-        self.assertIn(str(stale_temp), report["removed"])
+        removed_names = {Path(item).name for item in report["removed"]}
+        self.assertIn(stale_page.name, removed_names)
+        self.assertIn(stale_temp.name, removed_names)
         self.assertEqual(report["bytes_removed"], len("orphan page".encode()) + len(b"partial"))
         self.assertEqual(report["remaining_orphan_bytes"], recent_page.stat().st_size)
         self.assertFalse(stale_page.exists())

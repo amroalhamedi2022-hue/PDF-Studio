@@ -204,12 +204,10 @@ def run_native_text_stage(
                 else:
                     missing.append(page)
 
-            # Bound the bytes referenced by this stage before allocating more
-            # checkpoint artifacts. Count registered files even if their digest
-            # is bad: a corrupt large file still occupies disk and is not ours to
-            # delete automatically. Orphan files from an abrupt crash are outside
-            # this journal-derived accounting and require a separate safe cleanup
-            # policy.
+            # Bound checkpoint and leftover bytes before allocating more artifacts.
+            # Registered files count even with a bad digest; stale unreferenced
+            # stage files were pruned under the directory lock, while recent
+            # leftovers remain counted against the same cap.
             with journal._open() as db:
                 rows = db.execute(
                     "SELECT artifact FROM checkpoints WHERE job_id=? AND stage='native_text'",
