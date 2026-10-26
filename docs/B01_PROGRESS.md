@@ -402,7 +402,7 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 
 **Milestone:** B01 — Resource-Bounded PDF Core remains **OPEN**. This hardening closes a concrete gap in the local SQLite worker-ownership and artifact-directory coordination paths; it does not advance B01 to acceptance.
 
-**Production change:** `engine/pdfstudio/worker_lease.py` now routes both persistent lock files through `_open_lock_file()`. On POSIX, opening requires `O_NOFOLLOW` and fails closed if the host lacks it; the opened descriptor must be a regular file. New lock files use mode `0600`. On Windows, the helper rejects existing symlink/reparse paths before opening and validates the opened regular file against a fresh path inspection. This is defense against ordinary symlink aliases, **not** a claim that every same-user Windows path-replacement race is eliminated.
+**Production change:** `engine/pdfstudio/worker_lease.py` now routes both persistent lock files through `_open_lock_file()`. On POSIX, opening requires `O_NOFOLLOW` and fails closed if the host lacks it; the opened descriptor must be a regular file. New lock files request mode `0600`; Windows does not use POSIX permission bits. On Windows, the helper rejects existing symlink/reparse paths before opening and validates the opened regular file against a fresh path inspection. This is defense against ordinary symlink aliases, **not** a claim that every same-user Windows path-replacement race is eliminated.
 
 **Regression tests:** `tests/test_worker_lease.py` adds one test for the SQLite job lock and one for the artifact-directory lock. Each creates a symlink to a separate sentinel file, requires lock acquisition to fail, and verifies the target bytes remain unchanged. Hosts that cannot create symlinks report an explicit test skip.
 
@@ -410,7 +410,7 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - Test commit: [`82c953df23702533a25f32d6869407ceefb17842`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/82c953df23702533a25f32d6869407ceefb17842).
 - Runtime/API reference reviewed: [Python 3.12 `os` documentation](https://docs.python.org/3.12/library/os.html), including `os.open`, `os.fstat`, and `os.lstat`. No third-party implementation or dependency was copied or added.
 
-**Verification state:** exact-head cross-platform CI is **PENDING** for the current code+test+checkpoint SHA; do not claim PASS until the GitHub Actions run completes. The existing checkpoint/lease/crash-resume suite remains in scope and must continue to pass.
+**Verification:** GitHub Actions run [#40347102724](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40347102724) completed **PASS** on Ubuntu and Windows for the PR merge checkout `a0e072eee1a4de364e5191293626af798e942ea9`, which includes the current checkpoint head `b6cbc6775e96aacf702afbf1b91a59a7f6e5b67c`. Both hosts ran **128 tests**; both new symlink-rejection regressions passed on both hosts. Ubuntu also passed the 100/1000/5000-page synthetic checkpoint/FTS checks and the 64 MiB disk-backed extraction; Windows passed the 100-page smoke and 64 MiB extraction. The 5000-page PDF is a 2.64 MB born-digital synthetic fixture, not an OCR/scanned or >=2 GiB workload.
 
 **Build decision:** no APK/EXE build. This change concerns local lock-path semantics and can be tested directly in Python source/integration tests; app packaging would not answer the symlink-rejection question more strongly.
 
