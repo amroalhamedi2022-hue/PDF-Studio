@@ -377,3 +377,22 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 **Google Drive handoff:** the specified `PDF Studio — HANDOFF` document was not updated because this runtime has no Google Drive/Docs write connector. Sync remains **FAILED / NOT AVAILABLE**; no successful synchronization is claimed.
 
 **Next within B01:** keep B01 — Resource-Bounded PDF Core open. Continue realistic large-file/disk-full evidence and bounded parser/recovery checks, then independently recheck B01 exit gates. Do not open B02 yet.
+
+
+## 2026-10-26 — verify staged-file identity before PDF publication (same B01 milestone)
+
+**Risk addressed:** the parent previously accepted a nonempty staging path after worker exit. A worker defect or exploit could replace the preallocated result path with a symlink or a different inode; a size-only check would not prove that the file being published was the file the parent reserved.
+
+**Production change:** source commit [`da1c10b597abb30707291db6ce1d31a3a90ed2ac`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/da1c10b597abb30707291db6ce1d31a3a90ed2ac) makes the parent capture the reserved file's device/inode identity. After the worker has exited, the parent requires the staged path to remain a regular file with that identity, checks the configured size ceiling and minimum PDF header length, opens it with no-follow semantics where available, verifies the opened descriptor identity, checks the `%PDF-` header, and rechecks size/mtime before publication. The parent remains the only process publishing the caller-visible output with no-clobber hard-link semantics.
+
+**Regression coverage:** test commit [`41ab8a584878de386dd7183e3a438f49f5f353ae`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/41ab8a584878de386dd7183e3a438f49f5f353ae) adds tests for reserved inode identity, replacement-inode rejection, non-PDF-header rejection, and the integration gate failing without final output or staging leftovers.
+
+**Exact-head verification:** [CI run #40339576523](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40339576523) **PASS** on Ubuntu and Windows. Ubuntu passed the complete POSIX suite plus 100-page, 64 MiB disk-backed, 1000-page and 5000-page checkpoint/resume/FTS checks. Windows passed the complete Windows suite plus 100-page and 64 MiB disk-backed checks. This run validates source/tests only; no Android APK or Windows EXE was built.
+
+**Limits / NOT TESTED:** the guard validates staged-file identity and a PDF header, not a second independent full PDF parse. The worker is still not an OS sandbox and retains caller filesystem privileges; same-user adversarial races around publication, realistic >=2 GiB/scanned files, deliberate concurrent disk exhaustion, Arabic/English OCR, Android SAF/UI, Windows GUI/EXE and physical devices remain NOT TESTED. F08.01 is **IN PROGRESS**, not accepted; the full page-tool list is not implemented.
+
+**Build decision:** no APK/EXE build was warranted. The behavior under test is the Python parent/worker filesystem contract, and the exact-head cross-platform source/integration CI directly exercises the new guard.
+
+**Google Drive handoff:** the specified `PDF Studio — HANDOFF` Google Doc could not be updated because this runtime has no Drive/Docs write connector. Sync is **FAILED / NOT AVAILABLE**; no successful sync is claimed.
+
+**Next within B01:** continue the same Resource-Bounded PDF Core milestone with publication-race and disk-exhaustion evidence, then independently recheck B01 exit gates. Do not open B02 yet.
