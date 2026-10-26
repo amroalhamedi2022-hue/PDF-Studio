@@ -4,12 +4,14 @@ import tempfile
 import time
 import multiprocessing.process
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
 from pypdf import PdfReader, PdfWriter
 from pdfstudio.page_tools import PageToolError, extract_pages, merge_pdfs
 from pdfstudio.jobs import sha256_file
+from pdfstudio.page_isolation import _reserve_staging_file
 
 
 @unittest.skipUnless(os.name in ("posix", "nt"), "bounded POSIX or Windows worker required")
@@ -73,6 +75,39 @@ class IsolatedPageToolTests(unittest.TestCase):
                 extract_pages(self.a, self.out, "1", timeout_seconds=0.02)
         get_context.assert_not_called()
         self.assertEqual(self.a.read_bytes(), before)
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
+    def test_free_space_preflight_fails_before_hash_or_worker(self):
+        before = self.a.read_bytes()
+        with mock.patch("pdfstudio.page_isolation.shutil.disk_usage",
+                        return_value=SimpleNamespace(total=1024, used=1023, free=1)), \
+             mock.patch("pdfstudio.page_isolation._sha256_file_before_deadline") as hash_file, \
+             mock.patch("pdfstudio.page_isolation.mp.get_context") as get_context:
+            with self.assertRaisesRegex(PageToolError, "insufficient free space"):
+                extract_pages(self.a, self.out, "1", free_space_margin_bytes=0)
+        hash_file.assert_not_called()
+        get_context.assert_not_called()
+        self.assertEqual(self.a.read_bytes(), before)
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
+    def test_staging_reservation_allocates_requested_length(self):
+        reserved = self.root / "reserved.bin"
+        requested = 2 * 1024 * 1024
+        _reserve_staging_file(reserved, requested)
+        info = reserved.stat()
+        self.assertEqual(info.st_size, requested)
+        # POSIX posix_fallocate should allocate real blocks, not just a sparse EOF.
+        if os.name == "posix" and hasattr(info, "st_blocks"):
+            self.assertGreaterEqual(info.st_blocks * 512, requested)
+
+    def test_staging_reservation_failure_cleans_up_without_publishing(self):
+        patch_target = ("pdfstudio.page_isolation.os.posix_fallocate"
+                        if os.name == "posix" else "pdfstudio.page_isolation.os.ftruncate")
+        with mock.patch(patch_target, side_effect=OSError("simulated disk full")):
+            with self.assertRaisesRegex(PageToolError, "could not reserve estimated"):
+                extract_pages(self.a, self.out, "1")
         self.assertFalse(self.out.exists())
         self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
@@ -143,6 +178,9 @@ class IsolatedPageToolTests(unittest.TestCase):
 
     def test_invalid_limits_rejected(self):
         for settings in ({"max_pages": 0}, {"max_memory_mb": True},
+                         {"free_space_margin_bytes": -1},
+                         {"free_space_margin_bytes": True},
+                         {"free_space_margin_bytes": 1.5},
                          {"timeout_seconds": float("inf")}, {"timeout_seconds": -1}):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
                 extract_pages(self.a, self.out, [0], **settings)
