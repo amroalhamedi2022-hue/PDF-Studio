@@ -10,6 +10,7 @@ import math
 import multiprocessing as mp
 import os
 import shutil
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -77,8 +78,8 @@ def _check_free_space(directory: Path, estimated_output_bytes: int,
         )
 
 
-def _reserve_staging_file(path: Path, estimated_output_bytes: int) -> None:
-    """Reserve the estimated output on the destination filesystem before parsing."""
+def _reserve_staging_file(path: Path, estimated_output_bytes: int) -> tuple[int, int]:
+    """Reserve output space and return the reserved file's device/inode identity."""
     from .page_tools import PageToolError
 
     try:
@@ -108,6 +109,53 @@ def _reserve_staging_file(path: Path, estimated_output_bytes: int) -> None:
             raise PageToolError("could not reserve estimated PDF output space") from exc
         raise
     else:
+        info = os.fstat(fd)
+        os.close(fd)
+        return (info.st_dev, info.st_ino)
+
+
+def _verify_staging_file(path: Path, expected_identity: tuple[int, int],
+                         max_output_bytes: int) -> None:
+    """Reject replaced, linked, non-regular, oversized, or non-PDF staging output.
+
+    The worker must exit before this check. Identity is captured from the
+    parent's preallocated inode, so a worker that replaces result.pdf with a
+    symlink or a different file cannot trick the parent into publishing it.
+    """
+    from .page_tools import PageToolError
+
+    try:
+        path_info = path.lstat()
+    except OSError as exc:
+        raise PageToolError("isolated page operation did not stage a regular PDF") from exc
+    if (not stat.S_ISREG(path_info.st_mode)
+            or (path_info.st_dev, path_info.st_ino) != expected_identity):
+        raise PageToolError("staged PDF identity changed; refusing publication")
+    if path_info.st_size < 5 or path_info.st_size > max_output_bytes:
+        raise PageToolError("staged PDF size is invalid; refusing publication")
+
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise PageToolError("staged PDF could not be opened safely") from exc
+    try:
+        opened_info = os.fstat(fd)
+        if (not stat.S_ISREG(opened_info.st_mode)
+                or (opened_info.st_dev, opened_info.st_ino) != expected_identity
+                or opened_info.st_size != path_info.st_size
+                or opened_info.st_size < 5
+                or opened_info.st_size > max_output_bytes):
+            raise PageToolError("staged PDF changed during validation")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            if stream.read(5) != b"%PDF-":
+                raise PageToolError("staged output has no PDF header")
+        after_info = os.fstat(fd)
+        if ((after_info.st_dev, after_info.st_ino) != expected_identity
+                or after_info.st_size != opened_info.st_size
+                or after_info.st_mtime_ns != opened_info.st_mtime_ns):
+            raise PageToolError("staged PDF changed during validation")
+    finally:
         os.close(fd)
 
 
@@ -221,7 +269,7 @@ def run_page_operation(action: str, sources, output, selection=None, *,
     with tempfile.TemporaryDirectory(prefix=".pdfstudio-stage-", dir=destination.parent) as stage_dir:
         staged = Path(stage_dir) / "result.pdf"
         try:
-            _reserve_staging_file(staged, estimated_output_bytes)
+            staging_identity = _reserve_staging_file(staged, estimated_output_bytes)
             _require_deadline(deadline)
         except TimeoutError as exc:
             raise PageToolError("isolated page operation timed out") from exc
@@ -265,8 +313,7 @@ def run_page_operation(action: str, sources, output, selection=None, *,
             proc.join(timeout=max(0.0, deadline - time.monotonic()))
             if proc.is_alive() or proc.exitcode != 0:
                 raise PageToolError("isolated page worker did not exit cleanly")
-            if not staged.is_file() or staged.stat().st_size == 0:
-                raise PageToolError("isolated page operation did not stage a PDF")
+            _verify_staging_file(staged, staging_identity, max_output_bytes)
             try:
                 _require_deadline(deadline)
                 unchanged = all(
