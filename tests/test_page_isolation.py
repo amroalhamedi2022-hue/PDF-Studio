@@ -125,13 +125,15 @@ class IsolatedPageToolTests(unittest.TestCase):
     def test_source_changed_after_worker_success_never_publishes(self):
         before = self.a.read_bytes()
         calls = 0
+        real_hash = __import__("pdfstudio.page_isolation", fromlist=["_sha256_file_before_deadline"])._sha256_file_before_deadline
 
-        def altered_digest(path):
+        def altered_digest(path, deadline, chunk_bytes=1024 * 1024):
             nonlocal calls
             calls += 1
-            return sha256_file(path) if calls == 1 else "0" * 64
+            return real_hash(path, deadline, chunk_bytes) if calls == 1 else "0" * 64
 
-        with mock.patch("pdfstudio.page_isolation.sha256_file", side_effect=altered_digest):
+        with mock.patch("pdfstudio.page_isolation._sha256_file_before_deadline",
+                        side_effect=altered_digest):
             with self.assertRaises(PageToolError):
                 extract_pages(self.a, self.out, "1")
         self.assertGreaterEqual(calls, 2)
