@@ -344,3 +344,36 @@ Implement page ranges, metadata browser, safe file IO, and parser-isolation limi
 **Google Drive handoff:** no Drive/Docs write connector is available in this runtime. The specified `PDF Studio — HANDOFF` document was not updated; sync remains **FAILED / NOT AVAILABLE**. PR #2 remains Draft/open/unmerged; `main` is unchanged.
 
 **Next within B01:** add an explicit free-space estimate/reservation policy and realistic disk-backed large-file evidence, then independently recheck resource, integrity and recovery exit gates. Do not open B02 yet.
+
+
+## B01 follow-up — 2026-10-26: free-space preflight and staged output reservation
+
+**Decision record (ADR-0004, recorded here to keep the batch checkpoint consolidated).** Use Python's standard library instead of adding a disk-inspection dependency or invoking an external platform command. `shutil.disk_usage()` is documented for Unix and Windows; POSIX uses `os.posix_fallocate()` to reserve the staging range, while Windows extends the staging file before the worker starts. Sources: [Python shutil.disk_usage](https://docs.python.org/3/library/shutil.html#shutil.disk_usage), [Python os.posix_fallocate](https://docs.python.org/3/library/os.html#os.posix_fallocate), [Python os.ftruncate](https://docs.python.org/3/library/os.html#os.ftruncate). No third-party code was copied and no dependency was added.
+
+**Production behavior**
+- Estimate output as `min(max_output_bytes, max(1 MiB, 2 × total input bytes + 1 MiB per source))`; this is deliberately conservative but heuristic.
+- Check free bytes on the destination filesystem before source hashing and recheck after hashing.
+- Require a default 16 MiB safety margin, configurable through `free_space_margin_bytes` (zero is allowed for controlled tests).
+- Before spawning the parser worker, create and preallocate `result.pdf` inside the private staging directory on the same filesystem as the destination. The worker reuses this reserved file; the capped writer tracks the logical output end, truncates unused reservation after serialization, and deletes the staged file on failure.
+- A failed free-space query or reservation fails closed before publishing an output. The existing no-clobber hard-link publication and source SHA revalidation remain in place.
+
+**Source and test references**
+- `engine/pdfstudio/page_tools.py`: final tested source is included at exact CI SHA `6e2e07d4ee891c0a17adcba04e1ad6c6d0258e35`; intermediate production commits `e693e51eda48d480fed33b658f4cd9c575525194`, `4b87c04cc785bf4d22e0d4b3e2bd160992b39b0d`, and `6e2e07d4ee891c0a17adcba04e1ad6c6d0258e35`.
+- `engine/pdfstudio/page_isolation.py`: reservation/preflight implementation `1e81bc542cbf802da208f8e14b78c80b0da7cfd3`, normalized reservation failure handling `d1c9cec4b701ace1a1fcbff8bfc9a496cc5755ee`.
+- `tests/test_page_isolation.py`: regression tests `41def60f2f1562c7bd3c76ba239902a6426cf7ea` cover early low-space rejection before hashing/worker spawn, allocated staging length, reservation failure cleanup, and invalid margins.
+- `benchmarks/disk_space_preflight_bench.py` (`710b24c01339ac8d36e58817e0c75fb32d8dd652)) and `.github/workflows/source-check.yml` (`1fbbde66ef4dd42713a07a1baad3b26afe273f88)) add a generated 64 MiB disk-backed extraction smoke on Ubuntu and Windows.
+
+**Exact-code CI:** [run #40323380061](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40323380061) **PASS** on Ubuntu and Windows for code/test SHA `6e2e07d4ee891c0a17adcba04e1ad6c6d0258e35`. Each OS ran **123 tests**; Ubuntu skipped four Windows-only cases and all remaining tests passed. The 64 MiB benchmark passed on both hosts:
+- Linux: input `67,109,445` bytes; estimated reservation `135,267,466` bytes; free-space margin `16,777,216` bytes; output `67,109,392` bytes; elapsed `0.838 s`; source SHA unchanged; one output page; zero staging leftovers.
+- Windows: same input, estimate, margin and output size; elapsed `6.830 s`; source SHA unchanged; one output page; zero staging leftovers.
+- These free-space values describe the transient hosted runners, not a guaranteed minimum for users' devices.
+
+The same exact CI run also passed the 5000-page native-text/checkpoint crash-resume/FTS benchmark on Linux: 2,638,282-byte born-digital synthetic PDF; 2,500 durable checkpoints before intentional parent exit code 23; remaining 2,500 resumed in `7.346 s`; next pass reused all 5,000 in `0.758 s`; checkpoint-to-FTS indexing `2.852 s`; source SHA unchanged and FTS integrity PASS; parent/max-child RSS `53.10/53.79 MiB` (separate process high-water marks, not summed).
+
+**Acceptance and limitations:** F04.01, F04.02 and F04.06 remain **IN PROGRESS**, not PASS. The 64 MiB fixture is a generated PDF with a large comment stream, not a realistic scanned corpus. The estimate can be exceeded by unusual PDF rewrites, and another process can consume free space after preflight; failures still must not publish a partial final PDF. A real >=2 GiB corpus, deliberate disk-full race, Arabic/English OCR, OS reboot recovery, hostile-PDF sandboxing, Android SAF/UI, Windows GUI/EXE and physical-device acceptance remain **NOT TESTED**.
+
+**Build decision:** no APK/EXE was built. This change is confined to the Python filesystem/worker contract, and the cross-platform tests plus disk-backed integration benchmark directly answer the question; application packaging would not add evidence for this contract.
+
+**Google Drive handoff:** the specified `PDF Studio — HANDOFF` document was not updated because this runtime has no Google Drive/Docs write connector. Sync remains **FAILED / NOT AVAILABLE**; no successful synchronization is claimed.
+
+**Next within B01:** keep B01 — Resource-Bounded PDF Core open. Continue realistic large-file/disk-full evidence and bounded parser/recovery checks, then independently recheck B01 exit gates. Do not open B02 yet.
