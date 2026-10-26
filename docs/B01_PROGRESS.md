@@ -287,3 +287,21 @@ Implement page ranges, metadata browser, safe file IO, and parser-isolation limi
 **Google Drive handoff:** Drive/Docs write connector is unavailable in this runtime. `PDF Studio — HANDOFF` was **not updated**; sync status is **FAILED / NOT AVAILABLE**, not successful. PR #2 remains draft/open/unmerged; `main` unchanged.
 
 **Next within B01:** keep the resource-bounded core milestone open; proceed with a disk-backed large-file profile and bounded parser/recovery evidence before considering B02.
+
+
+
+## B01 follow-up — 2026-10-26: end-to-end deadline includes parent-side source hashing
+
+**Active milestone:** B01 Resource-Bounded PDF Core remains OPEN / PARTIAL. This closes a wall-clock gap in the existing page-operation timeout contract; it does not complete F01/F04 acceptance and does not open B02.
+
+**Production SHA:** `01570ecaac953138bd971d92e5577889ce99dd89`. `run_page_operation` now starts its monotonic deadline before source resolution/validation and applies that same deadline to parent-side streaming SHA-256 preflight and post-worker source revalidation. Hashing reads bounded 1 MiB chunks rather than relying on an unbounded parent-side full-file hash. If the deadline expires during either parent hash, the operation fails closed before publishing a destination. The worker's own parsing/hashing remains bounded by the parent wall deadline and existing POSIX resource limits / Windows Job Object memory containment. This is resource containment, **not** a filesystem/security sandbox.
+
+**Regression SHA:** `82342f3bbc01b7c277ad48921d769347e0a72799`. New `test_deadline_includes_parent_source_hashing` injects a slow preflight hash and proves the operation times out before worker spawn, leaves the source unchanged, publishes no output and leaves no staging directory. The existing source-mutation-after-worker regression was updated to intercept the new deadline-aware parent hash helper rather than the child-only hash symbol. An initial CI run `#40278551686` failed because that existing test still patched the old helper; the regression was corrected and the final exact-head CI below passes.
+
+**Exact-head CI:** [run #40278859043](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40278859043) **PASS** on Windows and Ubuntu. Windows: **116/116 tests PASS**; Ubuntu: **116 tests ran, four Windows-only tests skipped, all remaining PASS**. Both hosts passed the 100-page synthetic smoke. Linux 1000-page smoke: 526,269-byte PDF, 0.976 s native-text FTS indexing, 630,784-byte SQLite DB, parent/max-child peak RSS 35.88/35.48 MiB. Linux 5000-page crash/resume/FTS integration: 2,638,282-byte born-digital synthetic PDF; 2,500 durable pages before deliberate parent exit code 23; resume processed only the remaining 2,500 in 8.429 s; a subsequent complete-stage pass reused all 5,000 in 1.671 s; checkpoint-to-FTS indexing 1.369 s; artifacts 1,280,000 bytes; FTS DB 2,965,504 bytes; source SHA unchanged; FTS integrity PASS; parent/max-child peak RSS 53.11/53.96 MiB (separate process high-water marks, not summed). Windows 100-page smoke: 52,655-byte PDF, 0.394 s indexing, 102,400-byte SQLite DB; RSS not measured on Windows.
+
+**Acceptance / limits:** the regression proves deadline handling for injected slow parent-side hashing and the CI suite continues to prove extraction/merge and synthetic crash-resume behavior. It is **not** a realistic 2 GB PDF measurement, OCR, scanned Arabic/English, reboot recovery, Android/Windows GUI, or physical-device acceptance. F04.02/F04.03/F04.06 remain partial or NOT TESTED as shown in `docs/ACCEPTANCE.md`. No APK/EXE build was warranted: this Python-only wall-deadline and source-integrity question is directly tested by source CI; packaging would not test the parent hashing contract.
+
+**Google Drive handoff:** no Google Drive/Docs write connector is available in this runtime. `PDF Studio — HANDOFF` was **not updated**; sync is **FAILED / NOT AVAILABLE**, not successful.
+
+**Next within B01:** add a disk-backed large-file profile and continue bounded-parser / recovery evidence, while preserving SQLite checkpoints, immutable artifacts, source SHA checks, no-clobber publication and worker fencing. Do not open B02 until B01 resource/integrity/recovery gates are independently accepted. PR #2 remains draft/open/unmerged; `main` unchanged.
