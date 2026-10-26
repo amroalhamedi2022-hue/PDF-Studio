@@ -64,6 +64,14 @@ class PageToolsTests(unittest.TestCase):
         self.assertFalse(self.out.exists())
         self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
+    def test_merge_output_byte_cap_fails_closed_without_final_output(self):
+        originals = (self.a.read_bytes(), self.b.read_bytes())
+        with self.assertRaises(PageToolError):
+            merge_pdfs([self.a, self.b], self.out, max_output_bytes=128)
+        self.assertEqual((self.a.read_bytes(), self.b.read_bytes()), originals)
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
     def test_output_byte_cap_requires_positive_integer(self):
         for limit in (0, -1, True, 1.5):
             with self.subTest(limit=limit), self.assertRaises(ValueError):
