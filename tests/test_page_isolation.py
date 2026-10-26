@@ -58,6 +58,24 @@ class IsolatedPageToolTests(unittest.TestCase):
         self.assertFalse(self.out.exists())
         self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
+    def test_deadline_includes_parent_source_hashing(self):
+        before = self.a.read_bytes()
+        real_hash = __import__("pdfstudio.page_isolation", fromlist=["_sha256_file_before_deadline"])._sha256_file_before_deadline
+
+        def delayed_hash(path, deadline, chunk_bytes=1024 * 1024):
+            time.sleep(0.05)
+            return real_hash(path, deadline, chunk_bytes)
+
+        with mock.patch("pdfstudio.page_isolation._sha256_file_before_deadline",
+                        side_effect=delayed_hash), \
+             mock.patch("pdfstudio.page_isolation.mp.get_context") as get_context:
+            with self.assertRaisesRegex(PageToolError, "timed out"):
+                extract_pages(self.a, self.out, "1", timeout_seconds=0.02)
+        get_context.assert_not_called()
+        self.assertEqual(self.a.read_bytes(), before)
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
     def test_existing_output_never_replaced(self):
         self.out.write_bytes(b"private-output")
         with self.assertRaises(FileExistsError):
