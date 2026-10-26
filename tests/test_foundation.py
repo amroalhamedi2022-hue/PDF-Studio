@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from pdfstudio import JobJournal, JobSafetyError, SourceChangedError, normalize_arabic_search, sha256_file
@@ -46,6 +47,23 @@ class JournalTests(unittest.TestCase):
         self.journal.checkpoint(job, 0, "ocr", corrected)
         self.journal.set_state(job, "paused")
         self.assertEqual(JobJournal(self.root / "jobs.sqlite").resumable_pages(job, "ocr"), [0])
+
+    def test_create_job_rejects_source_mutation_during_digest_without_journaling(self):
+        original = self.original.read_bytes()
+        real_hash = sha256_file
+
+        def mutate_after_digest(path, chunk_bytes=1024 * 1024):
+            digest = real_hash(path, chunk_bytes)
+            Path(path).write_bytes(original + b"mutated-during-hash")
+            return digest
+
+        with mock.patch("pdfstudio.jobs.sha256_file", side_effect=mutate_after_digest):
+            with self.assertRaisesRegex(SourceChangedError, "changed while creating"):
+                self.journal.create_job(self.original, self.output, 1)
+
+        with self.journal._open() as db:
+            job_count = db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        self.assertEqual(job_count, 0)
 
     def test_changed_original_invalidates_resume(self):
         job = self.journal.create_job(self.original, self.output, 2)

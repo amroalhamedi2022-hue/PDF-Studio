@@ -130,8 +130,20 @@ class JobJournal:
         with src.open("rb") as pdf:
             if pdf.read(5) != b"%PDF-":
                 raise JobSafetyError("source does not start with a PDF header")
+        # Refuse to pin a digest if the source identity/metadata changes while
+        # streaming it. Otherwise a transient write can leave a pending job
+        # whose recorded digest never represented a stable input snapshot.
+        try:
+            fingerprint_before = self._source_stat_fingerprint(src)
+            digest = sha256_file(src)
+            fingerprint_after = self._source_stat_fingerprint(src)
+        except OSError as exc:
+            raise SourceChangedError(
+                "original PDF changed or became unreadable while creating job"
+            ) from exc
+        if fingerprint_before != fingerprint_after:
+            raise SourceChangedError("original PDF changed while creating job")
         job_id = str(uuid.uuid4())
-        digest = sha256_file(src)
         with self._open() as db:
             db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?)", (job_id, str(src), digest, str(dst), page_count, "pending"))
         return job_id

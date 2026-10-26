@@ -305,3 +305,18 @@ Implement page ranges, metadata browser, safe file IO, and parser-isolation limi
 **Google Drive handoff:** no Google Drive/Docs write connector is available in this runtime. `PDF Studio — HANDOFF` was **not updated**; sync is **FAILED / NOT AVAILABLE**, not successful.
 
 **Next within B01:** add a disk-backed large-file profile and continue bounded-parser / recovery evidence, while preserving SQLite checkpoints, immutable artifacts, source SHA checks, no-clobber publication and worker fencing. Do not open B02 until B01 resource/integrity/recovery gates are independently accepted. PR #2 remains draft/open/unmerged; `main` unchanged.
+
+
+## B01 follow-up — 2026-10-26: stable source pin at job creation
+
+**Risk addressed:** create_job previously streamed the initial SHA-256 without checking whether the source file's identity/metadata changed during that read. A concurrent writer could leave a pending SQLite job pinned to a digest that did not describe a stable file snapshot; later resume would fail source verification, but only after the unusable job had already been created.
+
+**Production change:** JobJournal.create_job now records the source stat fingerprint immediately before and after the streaming digest. It rejects a changed/unreadable source with SourceChangedError before inserting the job row. This is a race-detection guard, not a filesystem lock and not a defense against a hostile writer able to manipulate the file concurrently.
+
+**Regression:** tests/test_foundation.py::test_create_job_rejects_source_mutation_during_digest_without_journaling mutates a synthetic input immediately after the digest helper returns and asserts job creation fails and SQLite contains zero job rows.
+
+**Exact-head CI:** pending for the commit produced by this update. Do not count this new regression as PASS until Ubuntu and Windows source-check jobs both complete successfully.
+
+**Acceptance / limits:** F04.03 remains IN PROGRESS. Existing checkpoint/crash-resume and FTS results remain evidence for their prior exact SHAs; they do not prove this new guard until CI completes. No APK/EXE build is justified: this change concerns the Python journal's initial source pin and is directly testable with cross-platform source tests. Physical Android/Windows UI, OS reboot recovery, OCR, and realistic >=2 GB PDF acceptance remain NOT TESTED.
+
+**Google Drive handoff:** the Drive/Docs write connector is unavailable in this runtime. PDF Studio — HANDOFF was not updated; sync status remains FAILED / NOT AVAILABLE.
