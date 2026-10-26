@@ -44,3 +44,44 @@ def exclusive_worker_lock(database: Path, job_id: str) -> Iterator[None]:
                 yield
             finally:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def exclusive_artifact_directory_lock(directory: Path) -> Iterator[None]:
+    """Serialize cooperating PDF-stage writers and cleanup for one local folder.
+
+    The lock file is persistent by design: unlinking it could let two
+    processes lock different inodes and both believe they own the directory.
+    This is a local coordination primitive, not a distributed lock or sandbox.
+    """
+    if os.name not in ("posix", "nt"):
+        raise RuntimeError("artifact directory lock unsupported on this platform")
+    root = Path(directory).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("artifact directory must be a directory")
+    lock_path = root / ".pdfstudio-artifacts.lock"
+    if lock_path.is_symlink():
+        raise RuntimeError("artifact directory lock path must not be a symlink")
+    with lock_path.open("a+b") as stream:
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            try:
+                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise RuntimeError("another worker owns this artifact directory") from exc
+            try:
+                yield
+            finally:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            try:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise RuntimeError("another worker owns this artifact directory") from exc
+            try:
+                yield
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)

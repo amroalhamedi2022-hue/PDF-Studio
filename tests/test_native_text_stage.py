@@ -2,6 +2,7 @@
 import os
 import multiprocessing as mp
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -10,7 +11,11 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from pdfstudio import JobJournal, JobSafetyError, sha256_file
 from pdfstudio.bounded_parser import IsolatedPdfReader, ParserIsolationError
-from pdfstudio.native_text_stage import run_native_text_stage
+from pdfstudio.native_text_stage import (
+    cleanup_orphaned_native_text_artifacts,
+    run_native_text_stage,
+)
+from pdfstudio.worker_lease import exclusive_artifact_directory_lock
 
 
 
@@ -193,6 +198,89 @@ class NativeTextStageTests(unittest.TestCase):
                     self.journal, self.job, self.artifacts, max_checkpoint_bytes=value
                 )
         self.assertEqual(self.journal.get_job(self.job)["state"], "pending")
+
+    def test_orphan_cleanup_removes_only_old_unreferenced_stage_files(self):
+        run_native_text_stage(self.journal, self.job, self.artifacts)
+        protected = self._artifact(1)
+        stale_page = self.artifacts / "page-00000009-abandoned.txt"
+        stale_temp = self.artifacts / ".text-abandoned.tmp"
+        recent_page = self.artifacts / "page-00000010-recent.txt"
+        stale_page.write_text("orphan page", encoding="utf-8")
+        stale_temp.write_bytes(b"partial")
+        recent_page.write_text("recent orphan", encoding="utf-8")
+        old = time.time() - 3 * 24 * 60 * 60
+        os.utime(stale_page, (old, old))
+        os.utime(stale_temp, (old, old))
+        report = cleanup_orphaned_native_text_artifacts(
+            self.journal, self.artifacts, min_age_seconds=3600
+        )
+        self.assertIn(str(stale_page), report["removed"])
+        self.assertIn(str(stale_temp), report["removed"])
+        self.assertEqual(report["bytes_removed"], len("orphan page".encode()) + len(b"partial"))
+        self.assertEqual(report["remaining_orphan_bytes"], recent_page.stat().st_size)
+        self.assertFalse(stale_page.exists())
+        self.assertFalse(stale_temp.exists())
+        self.assertTrue(recent_page.exists())
+        self.assertTrue(protected.exists())
+        self.assertEqual(self.journal.recovery_snapshot(self.job, "native_text")["valid_pages"], (0, 1, 2))
+
+    def test_orphan_cleanup_preserves_hardlink_alias_of_registered_artifact(self):
+        run_native_text_stage(self.journal, self.job, self.artifacts)
+        registered = self._artifact(1)
+        alias = self.artifacts / "page-00000001-hardlink.txt"
+        try:
+            os.link(registered, alias)
+        except OSError as exc:
+            self.skipTest("hard links unavailable on this filesystem: %s" % exc)
+        old = time.time() - 3 * 24 * 60 * 60
+        os.utime(alias, (old, old))
+        report = cleanup_orphaned_native_text_artifacts(
+            self.journal, self.artifacts, min_age_seconds=3600
+        )
+        self.assertNotIn(str(alias), report["removed"])
+        self.assertTrue(alias.exists())
+        self.assertEqual(alias.read_bytes(), registered.read_bytes())
+
+    def test_orphan_cleanup_refuses_to_race_an_active_directory_writer(self):
+        self.artifacts.mkdir()
+        with exclusive_artifact_directory_lock(self.artifacts):
+            with self.assertRaisesRegex(RuntimeError, "owns this artifact directory"):
+                cleanup_orphaned_native_text_artifacts(
+                    self.journal, self.artifacts, min_age_seconds=0
+                )
+
+    def test_orphan_cleanup_validates_age_and_timestamp(self):
+        self.artifacts.mkdir()
+        for kwargs in ({"min_age_seconds": -1}, {"min_age_seconds": True},
+                       {"min_age_seconds": float("inf")}, {"now": float("nan")}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                cleanup_orphaned_native_text_artifacts(
+                    self.journal, self.artifacts, **kwargs
+                )
+
+    def test_native_stage_cleans_stale_orphans_before_enforcing_byte_budget(self):
+        self.artifacts.mkdir()
+        orphan = self.artifacts / "page-00000009-crash-leftover.txt"
+        orphan.write_bytes(b"x" * 100)
+        old = time.time() - 3 * 24 * 60 * 60
+        os.utime(orphan, (old, old))
+        result = run_native_text_stage(
+            self.journal, self.job, self.artifacts, max_checkpoint_bytes=64
+        )
+        self.assertEqual(result["processed"], (0, 1, 2))
+        self.assertFalse(orphan.exists())
+        self.assertEqual(self.journal.recovery_snapshot(self.job, "native_text")["valid_pages"], (0, 1, 2))
+
+    def test_recent_orphan_bytes_count_toward_checkpoint_budget(self):
+        self.artifacts.mkdir()
+        orphan = self.artifacts / "page-00000009-recent-leftover.txt"
+        orphan.write_bytes(b"x" * 60)
+        with self.assertRaisesRegex(ValueError, "byte cap"):
+            run_native_text_stage(
+                self.journal, self.job, self.artifacts, max_checkpoint_bytes=64
+            )
+        self.assertTrue(orphan.exists())
+        self.assertEqual(self.journal.recovery_snapshot(self.job, "native_text")["valid_pages"], ())
 
 
 if __name__ == "__main__":
