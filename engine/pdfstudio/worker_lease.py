@@ -26,8 +26,9 @@ def _open_lock_file(path: Path):
     POSIX requires O_NOFOLLOW; if the host does not provide it, fail closed.
     Windows has no equivalent flag in Python's portable os.open API, so check
     the path before opening and compare the opened handle with a fresh lstat.
-    The Windows checks reject ordinary symlink/reparse aliases, but do not
-    claim to eliminate every same-user path-replacement race.
+    Both hosts reject hard-linked lock files because an alias could couple
+    unrelated lock names or let another path interfere with worker ownership.
+    The Windows checks do not claim to eliminate every same-user path race.
     """
     flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0)
     if os.name == "posix":
@@ -56,6 +57,10 @@ def _open_lock_file(path: Path):
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode):
             raise RuntimeError("lock path must be a regular file")
+        # A lock must have exactly one directory entry. Otherwise a hard-link
+        # alias can make distinct logical lock names share the same inode.
+        if getattr(opened, "st_nlink", 1) != 1:
+            raise RuntimeError("lock file must not have hard-link aliases")
         if os.name == "nt":
             current = path.lstat()
             if (
