@@ -45,12 +45,16 @@ def _preflight_reader(reader: PdfReader) -> None:
         raise PageToolError("signature form field found: refusing page alterations")
 
 
-def _validated_output(path: str | Path, sources: Iterable[Path]) -> Path:
+def _validated_output(path: str | Path, sources: Iterable[Path], *,
+                      allow_existing_staging: bool = False) -> Path:
     dst = Path(path).resolve()
     if dst in sources:
         raise PageToolError("output must not equal any source PDF")
     if os.path.lexists(path):
-        raise FileExistsError(f"output exists: {path}")
+        # Only the private worker entry points may reuse the parent's preallocated
+        # result.pdf. Public destination validation remains strictly no-clobber.
+        if (not allow_existing_staging or os.path.islink(path) or not dst.is_file()):
+            raise FileExistsError(f"output exists: {path}")
     if not dst.parent.is_dir():
         raise FileNotFoundError(f"output directory does not exist: {dst.parent}")
     return dst
@@ -123,7 +127,7 @@ def _extract_pages_direct(source: str | Path, output: str | Path, pages: Iterabl
                           max_output_bytes: int) -> Path:
     """Extract 0-based indices or one-based inclusive text ranges to a new PDF."""
     src = _validated_source(source)
-    dst = _validated_output(output, (src,))
+    dst = _validated_output(output, (src,), allow_existing_staging=True)
     if not isinstance(pages, str):
         selected = list(pages)
         if not selected or any(not isinstance(i, int) or isinstance(i, bool) for i in selected):
@@ -155,7 +159,7 @@ def _merge_pdfs_direct(sources: Iterable[str | Path], output: str | Path,
     inputs = [_validated_source(p) for p in sources]
     if len(inputs) < 2:
         raise PageToolError("merge requires at least two PDF inputs")
-    dst = _validated_output(output, inputs)
+    dst = _validated_output(output, inputs, allow_existing_staging=True)
     writer = PdfWriter()
     with ExitStack() as stack:
         total_pages = 0
