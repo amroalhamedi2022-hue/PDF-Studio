@@ -1,6 +1,8 @@
 """Bounded extract/merge contracts using synthetic PDFs, never private data."""
 import os
 import tempfile
+import time
+import multiprocessing.process
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -61,6 +63,19 @@ class IsolatedPageToolTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             merge_pdfs([self.a, self.b], self.out)
         self.assertEqual(self.out.read_bytes(), b"private-output")
+
+    def test_timeout_includes_worker_startup(self):
+        original_start = multiprocessing.process.BaseProcess.start
+
+        def delayed_start(process):
+            time.sleep(0.1)
+            return original_start(process)
+
+        with mock.patch("multiprocessing.process.BaseProcess.start", new=delayed_start):
+            with self.assertRaisesRegex(PageToolError, "timed out"):
+                extract_pages(self.a, self.out, "1", timeout_seconds=0.02)
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
     def test_only_parent_publishes_after_staging(self):
         real_link = os.link
