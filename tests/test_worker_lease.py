@@ -1,4 +1,5 @@
 """Cross-process ownership and crash recovery for B01 journal (no real OCR)."""
+import hashlib
 import multiprocessing as mp
 import os
 import tempfile
@@ -6,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from pdfstudio import JobJournal, JobSafetyError, SourceChangedError
+from pdfstudio.worker_lease import exclusive_artifact_directory_lock, exclusive_worker_lock
 
 
 def _abrupt_worker_exit(database: str, job_id: str) -> None:
@@ -111,6 +113,42 @@ class WorkerLeaseTests(unittest.TestCase):
         with self.assertRaises(SourceChangedError):
             with self.journal.worker_session(self.job):
                 pass
+
+
+    def _symlink_or_skip(self, link: Path, target: Path) -> None:
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest("symlink creation is unavailable on this host: %s" % exc)
+
+    def test_worker_lock_rejects_symlink_alias_without_touching_target(self):
+        target = self.root / "unrelated-target.bin"
+        target.write_bytes(b"must remain unchanged")
+        suffix = hashlib.sha256(self.job.encode("utf-8")).hexdigest()
+        lock_path = self.database.resolve().with_name(
+            self.database.name + "." + suffix + ".worker.lock"
+        )
+        self._symlink_or_skip(lock_path, target)
+
+        with self.assertRaisesRegex(RuntimeError, "symlink|reparse|safely"):
+            with exclusive_worker_lock(self.database, self.job):
+                self.fail("a symlink must never become a worker lock")
+
+        self.assertEqual(target.read_bytes(), b"must remain unchanged")
+        self.assertTrue(lock_path.is_symlink())
+
+    def test_artifact_directory_lock_rejects_symlink_alias_without_touching_target(self):
+        target = self.root / "unrelated-artifacts-target.bin"
+        target.write_bytes(b"must remain unchanged")
+        lock_path = self.root / ".pdfstudio-artifacts.lock"
+        self._symlink_or_skip(lock_path, target)
+
+        with self.assertRaisesRegex(RuntimeError, "symlink|reparse|safely"):
+            with exclusive_artifact_directory_lock(self.root):
+                self.fail("a symlink must never become an artifact-directory lock")
+
+        self.assertEqual(target.read_bytes(), b"must remain unchanged")
+        self.assertTrue(lock_path.is_symlink())
 
 
 if __name__ == "__main__":
