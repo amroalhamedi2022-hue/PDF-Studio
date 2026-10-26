@@ -524,4 +524,10 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 
 **Google Drive handoff:** FAILED / NOT AVAILABLE in this runtime because no Google Docs/Drive write connector is exposed; the specified PDF Studio handoff was not updated.
 
-**Next:** run exact-head Ubuntu/Windows CI, record the evidence here and in `docs/ACCEPTANCE.md`, then continue the same B01 milestone. Do not start B02.
+**Exact source/test verification:** production/test/docs commit [`bf01939f24cd96d01b92828083cd31e43098b24e`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/bf01939f24cd96d01b92828083cd31e43098b24e) passed [CI #40404012358](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40404012358) and duplicate run [#40404004103](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40404004103) on Ubuntu + Windows. Both completed successfully. `compileall` passed; Ubuntu ran 150 tests with four Windows-only skips, and Windows ran all 150 tests. All five split-specific tests passed on both hosts.
+
+**Measured synthetic checks:** Linux 100-page smoke PASS; 1000 pages / 526,269-byte PDF indexed in 0.540 s, FTS integrity PASS, source unchanged, parent peak RSS 35.78 MiB / max child 35.55 MiB; 5000 pages / 2,638,282-byte PDF passed checkpoint interruption after 2500 pages, resume of the remaining 2500, reuse verification of all 5000, FTS integrity and unchanged source (resume 7.778 s; reuse 0.650 s; parent peak RSS 52.93 MiB / max child 53.78 MiB). Both Ubuntu and Windows passed the 64 MiB disk-backed output reservation/extraction smoke with zero staging leftovers. These are generated born-digital/comment-stream fixtures, not OCR/scanned or realistic >=2 GiB documents.
+
+**Build decision:** no APK/EXE build. The tested behavior is the cross-platform Python page-range/output transaction; source/integration CI directly answers the split correctness and rollback question.
+
+**Next:** keep B01 active. The next page-tool gaps are split by bookmarks/size and a more efficient single-pass splitter; Android/Windows UI and visual/device acceptance, realistic large/scanned files, OCR and crash/reboot recovery remain NOT TESTED. Do not start B02.
