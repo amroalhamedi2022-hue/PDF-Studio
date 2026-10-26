@@ -417,3 +417,20 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 **Acceptance / remaining:** F04.03 remains **IN PROGRESS**. These tests do not prove OS-reboot recovery, multi-user/distributed locking, complete hostile-PDF sandboxing, or every Windows same-user race. Keep the persistent lock inode; never unlink lock files. B01 remains the active milestone; do not open B02.
 
 **Google Drive handoff:** **FAILED / NOT AVAILABLE** in this runtime because no Google Docs/Drive write connector is exposed. The specified `PDF Studio — HANDOFF` document was not updated; no sync success is claimed.
+
+
+## 2026-10-26 — reject hard-link aliases for persistent worker locks (same B01 milestone)
+
+**Milestone:** B01 — Resource-Bounded PDF Core remains **OPEN**. This is a narrow ownership-integrity hardening; it does not constitute full crash/reboot acceptance.
+
+**Production change:** commit [`06313571b5faf92402d75ecdcdc5227dbae55924`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/06313571b5faf92402d75ecdcdc5227dbae55924) makes `_open_lock_file()` reject a lock whose opened file reports `st_nlink != 1`, in addition to existing regular-file and symlink/reparse checks. This prevents two distinct lock names from silently sharing one inode through a hard-link alias. It does not prevent all same-user Windows path races and is not a sandbox.
+
+**Regression tests:** commit [`dd0106ff36bbb58c4b9e5abdd0220451bccc4eb4`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/dd0106ff36bbb58c4b9e5abdd0220451bccc4eb4) adds two synthetic tests: worker-lock hard-link rejection and artifact-directory-lock hard-link rejection. Both assert the unrelated target bytes and two-link identity remain unchanged after rejection. Hosts that cannot create hard links explicitly skip the test.
+
+**Exact-head CI at checkpoint time:** PR source-check run [#40367425044](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40367425044) for test SHA `dd0106ff36bbb58c4b9e5abdd0220451bccc4eb4` was **PENDING** when this checkpoint was written; no PASS is claimed until GitHub reports completion. The workflow discovers tests via `python -m unittest discover -s tests -v` on Ubuntu and Windows.
+
+**Build decision:** no APK/EXE build. This change concerns Python local filesystem lock semantics; direct cross-platform source tests are the relevant evidence and application packaging would not answer the hard-link question more strongly.
+
+**Google Drive handoff:** **FAILED / NOT AVAILABLE** in this runtime because no Google Docs/Drive write connector is exposed. The specified `PDF Studio — HANDOFF` document was not updated; no sync success is claimed.
+
+**Next within B01:** obtain exact-head Ubuntu/Windows CI results, then continue with publication-race and concurrent disk-exhaustion tests plus realistic large-file evidence. Keep B01 open; do not start B02.
