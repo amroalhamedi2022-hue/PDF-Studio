@@ -486,7 +486,7 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 
 ## 2026-10-26 — B01 page-operation slice: bounded CropBox cropping
 
-- Added `crop_pages(source, output, box, pages="all")` with the box expressed as absolute PDF user-space coordinates `(left, bottom, right, top)`. Coordinates must be finite, form a positive rectangle, and remain within every selected page's MediaBox.
+- Added `crop_pages(source, output, box, pages="all")` with the box expressed as absolute PDF user-space coordinates `(left, bottom, right, top)`. Coordinates must be finite (including safe rejection of integers too large to convert to finite floats), form a positive rectangle, and remain within every selected page's MediaBox.
 - Crop changes only the PDF CropBox; it is reversible and **does not erase underlying content or provide redaction**. Encrypted and apparently signed inputs remain fail-closed through shared preflight. Original bytes are hash-checked and never written.
 - Reuses the existing isolated worker, wall deadline, memory/CPU/output limits, disk preflight, same-filesystem staging identity and atomic no-clobber publication.
 - Added source tests for selected-page geometry/order, invalid/non-finite/out-of-bounds boxes, existing-output preservation and source-byte integrity; added an isolated-worker integration test.

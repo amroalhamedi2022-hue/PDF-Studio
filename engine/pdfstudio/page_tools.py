@@ -129,9 +129,15 @@ def _normalize_crop_box(box: tuple[float, float, float, float]) -> tuple[float, 
         raise PageToolError("crop box must contain left, bottom, right, and top")
     coordinates: list[float] = []
     for value in box:
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise PageToolError("crop box coordinates must be finite numbers")
-        coordinates.append(float(value))
+        try:
+            numeric = float(value)
+        except (OverflowError, ValueError) as exc:
+            raise PageToolError("crop box coordinates must be finite numbers") from exc
+        if not math.isfinite(numeric):
+            raise PageToolError("crop box coordinates must be finite numbers")
+        coordinates.append(numeric)
     left, bottom, right, top = coordinates
     if right <= left or top <= bottom:
         raise PageToolError("crop box must have positive width and height")

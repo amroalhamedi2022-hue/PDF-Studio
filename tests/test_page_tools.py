@@ -64,6 +64,7 @@ class PageToolsTests(unittest.TestCase):
             (10, 10, 10, 20),
             (10, 30, 20, 20),
             (float('nan'), 0, 10, 10),
+            (10 ** 1000, 0, 10 ** 1001, 10),
             (True, 0, 10, 10),
         )
         for box in invalid_boxes:
