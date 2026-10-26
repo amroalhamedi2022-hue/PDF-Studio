@@ -159,6 +159,60 @@ def _verify_staging_file(path: Path, expected_identity: tuple[int, int],
         os.close(fd)
 
 
+def _publish_verified_staging_file(staged: Path, destination: Path,
+                                   expected_identity: tuple[int, int],
+                                   max_output_bytes: int) -> Path:
+    """Publish only if the destination is the validated staging inode.
+
+    os.link provides atomic no-clobber behavior for the destination. The
+    post-link identity check closes a second gap: a staging path replaced after
+    pre-publication validation must not be reported as a successful export.
+    Cleanup is limited to a destination that still aliases the unexpected
+    staging inode created by this publication attempt; unrelated racing outputs
+    are never removed.
+    """
+    from .page_tools import PageToolError
+
+    _verify_staging_file(staged, expected_identity, max_output_bytes)
+    # Hard-link creation is atomic and does not overwrite an existing output.
+    # If another process creates the destination first, preserve its bytes.
+    os.link(staged, destination)
+
+    try:
+        published_info = destination.lstat()
+        staged_info = staged.lstat()
+    except OSError as exc:
+        raise PageToolError("published PDF disappeared during validation") from exc
+
+    published_identity = (published_info.st_dev, published_info.st_ino)
+    staging_identity = (staged_info.st_dev, staged_info.st_ino)
+    if not stat.S_ISREG(published_info.st_mode) or published_identity != expected_identity:
+        # We may remove only the link this call just created: destination and
+        # current staging path must still identify the same unexpected inode.
+        # If another actor replaced destination independently, leave it alone.
+        if published_identity == staging_identity and published_identity != expected_identity:
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+        raise PageToolError("published PDF identity changed; refusing publication")
+
+    # Validate the caller-visible path itself, not only the temporary name.
+    # This also rechecks the PDF header, size cap, and metadata stability.
+    try:
+        _verify_staging_file(destination, expected_identity, max_output_bytes)
+    except PageToolError:
+        try:
+            current = destination.lstat()
+            if (stat.S_ISREG(current.st_mode)
+                    and (current.st_dev, current.st_ino) == expected_identity):
+                destination.unlink()
+        except OSError:
+            pass
+        raise
+    return destination
+
+
 def _worker(pipe, gate, action, sources, output, selection, digests, memory_bytes,
             cpu_seconds, max_pages, max_output_bytes):
     try:
@@ -331,8 +385,9 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                 _require_deadline(deadline)
             except TimeoutError as exc:
                 raise PageToolError("isolated page operation timed out") from exc
-            os.link(staged, destination)
-            return destination
+            return _publish_verified_staging_file(
+                staged, destination, staging_identity, max_output_bytes
+            )
         finally:
             child.close()
             parent.close()
