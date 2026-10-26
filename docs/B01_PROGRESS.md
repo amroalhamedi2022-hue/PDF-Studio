@@ -396,3 +396,24 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 **Google Drive handoff:** the specified `PDF Studio — HANDOFF` Google Doc could not be updated because this runtime has no Drive/Docs write connector. Sync is **FAILED / NOT AVAILABLE**; no successful sync is claimed.
 
 **Next within B01:** continue the same Resource-Bounded PDF Core milestone with publication-race and disk-exhaustion evidence, then independently recheck B01 exit gates. Do not open B02 yet.
+
+
+## 2026-10-26 — reject symlink aliases for persistent worker locks (same B01 milestone)
+
+**Milestone:** B01 — Resource-Bounded PDF Core remains **OPEN**. This hardening closes a concrete gap in the local SQLite worker-ownership and artifact-directory coordination paths; it does not advance B01 to acceptance.
+
+**Production change:** `engine/pdfstudio/worker_lease.py` now routes both persistent lock files through `_open_lock_file()`. On POSIX, opening requires `O_NOFOLLOW` and fails closed if the host lacks it; the opened descriptor must be a regular file. New lock files use mode `0600`. On Windows, the helper rejects existing symlink/reparse paths before opening and validates the opened regular file against a fresh path inspection. This is defense against ordinary symlink aliases, **not** a claim that every same-user Windows path-replacement race is eliminated.
+
+**Regression tests:** `tests/test_worker_lease.py` adds one test for the SQLite job lock and one for the artifact-directory lock. Each creates a symlink to a separate sentinel file, requires lock acquisition to fail, and verifies the target bytes remain unchanged. Hosts that cannot create symlinks report an explicit test skip.
+
+- Production commit: [`c53a0f610f694b7be37d87710a666270b7ec703d`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/c53a0f610f694b7be37d87710a666270b7ec703d).
+- Test commit: [`82c953df23702533a25f32d6869407ceefb17842`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/82c953df23702533a25f32d6869407ceefb17842).
+- Runtime/API reference reviewed: [Python 3.12 `os` documentation](https://docs.python.org/3.12/library/os.html), including `os.open`, `os.fstat`, and `os.lstat`. No third-party implementation or dependency was copied or added.
+
+**Verification state:** exact-head cross-platform CI is **PENDING** for the current code+test+checkpoint SHA; do not claim PASS until the GitHub Actions run completes. The existing checkpoint/lease/crash-resume suite remains in scope and must continue to pass.
+
+**Build decision:** no APK/EXE build. This change concerns local lock-path semantics and can be tested directly in Python source/integration tests; app packaging would not answer the symlink-rejection question more strongly.
+
+**Acceptance / remaining:** F04.03 remains **IN PROGRESS**. These tests do not prove OS-reboot recovery, multi-user/distributed locking, complete hostile-PDF sandboxing, or every Windows same-user race. Keep the persistent lock inode; never unlink lock files. B01 remains the active milestone; do not open B02.
+
+**Google Drive handoff:** **FAILED / NOT AVAILABLE** in this runtime because no Google Docs/Drive write connector is exposed. The specified `PDF Studio — HANDOFF` document was not updated; no sync success is claimed.
