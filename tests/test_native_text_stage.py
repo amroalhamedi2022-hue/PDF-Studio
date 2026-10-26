@@ -157,6 +157,43 @@ class NativeTextStageTests(unittest.TestCase):
         self.assertEqual(self.journal.get_job(other)["state"], "paused")
         self.assertEqual(self.journal.recovery_snapshot(other, "native_text")["valid_pages"], ())
 
+    def test_checkpoint_byte_cap_rejects_before_writing_over_budget_page(self):
+        with self.assertRaisesRegex(ValueError, "byte cap"):
+            run_native_text_stage(
+                self.journal, self.job, self.artifacts, max_checkpoint_bytes=5
+            )
+        snapshot = self.journal.recovery_snapshot(self.job, "native_text")
+        self.assertEqual(snapshot["valid_pages"], ())
+        self.assertEqual(snapshot["missing_pages"], (0, 1, 2))
+        self.assertEqual(list(self.artifacts.glob("page-*.txt")) if self.artifacts.exists() else [], [])
+        self.assertEqual(sha256_file(self.source), self.digest)
+
+    def test_checkpoint_byte_cap_applies_to_verified_resume_artifacts(self):
+        polls = 0
+        def cancel_after_one_page():
+            nonlocal polls
+            polls += 1
+            return polls >= 3
+        first = run_native_text_stage(
+            self.journal, self.job, self.artifacts,
+            max_checkpoint_bytes=1024, cancel_requested=cancel_after_one_page,
+        )
+        self.assertEqual(first["processed"], (0,))
+        with self.assertRaisesRegex(ValueError, "registered checkpoint artifacts"):
+            run_native_text_stage(
+                self.journal, self.job, self.artifacts, max_checkpoint_bytes=1
+            )
+        self.assertEqual(self.journal.recovery_snapshot(self.job, "native_text")["valid_pages"], (0,))
+        self.assertEqual(self.journal.get_job(self.job)["state"], "paused")
+
+    def test_checkpoint_byte_cap_rejects_invalid_values(self):
+        for value in (0, -1, True, 1.5):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                run_native_text_stage(
+                    self.journal, self.job, self.artifacts, max_checkpoint_bytes=value
+                )
+        self.assertEqual(self.journal.get_job(self.job)["state"], "pending")
+
 
 if __name__ == "__main__":
     unittest.main()
