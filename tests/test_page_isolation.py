@@ -11,7 +11,7 @@ from unittest import mock
 from pypdf import PdfReader, PdfWriter
 from pdfstudio.page_tools import PageToolError, extract_pages, merge_pdfs
 from pdfstudio.jobs import sha256_file
-from pdfstudio.page_isolation import _reserve_staging_file
+from pdfstudio.page_isolation import _reserve_staging_file, _verify_staging_file
 
 
 @unittest.skipUnless(os.name in ("posix", "nt"), "bounded POSIX or Windows worker required")
@@ -95,12 +95,39 @@ class IsolatedPageToolTests(unittest.TestCase):
     def test_staging_reservation_allocates_requested_length(self):
         reserved = self.root / "reserved.bin"
         requested = 2 * 1024 * 1024
-        _reserve_staging_file(reserved, requested)
+        identity = _reserve_staging_file(reserved, requested)
         info = reserved.stat()
+        self.assertEqual(identity, (info.st_dev, info.st_ino))
         self.assertEqual(info.st_size, requested)
         # POSIX posix_fallocate should allocate real blocks, not just a sparse EOF.
         if os.name == "posix" and hasattr(info, "st_blocks"):
             self.assertGreaterEqual(info.st_blocks * 512, requested)
+
+    def test_staging_validation_rejects_replaced_inode(self):
+        staged = self.root / "result.pdf"
+        identity = _reserve_staging_file(staged, 1024 * 1024)
+        moved = self.root / "reserved-original.bin"
+        staged.rename(moved)
+        staged.write_bytes(b"%PDF-1.4\\nreplacement")
+        with self.assertRaisesRegex(PageToolError, "identity changed"):
+            _verify_staging_file(staged, identity, 2 * 1024 * 1024)
+
+    def test_staging_validation_rejects_non_pdf_header(self):
+        staged = self.root / "result.pdf"
+        identity = _reserve_staging_file(staged, 1024 * 1024)
+        with staged.open("r+b") as stream:
+            stream.write(b"NOTPDF")
+            stream.truncate()
+        with self.assertRaisesRegex(PageToolError, "size is invalid|no PDF header"):
+            _verify_staging_file(staged, identity, 2 * 1024 * 1024)
+
+    def test_parent_refuses_publication_when_staging_validation_fails(self):
+        with mock.patch("pdfstudio.page_isolation._verify_staging_file",
+                        side_effect=PageToolError("staged PDF identity changed")):
+            with self.assertRaisesRegex(PageToolError, "identity changed"):
+                extract_pages(self.a, self.out, "1")
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
     def test_staging_reservation_failure_cleans_up_without_publishing(self):
         patch_target = ("pdfstudio.page_isolation.os.posix_fallocate"
