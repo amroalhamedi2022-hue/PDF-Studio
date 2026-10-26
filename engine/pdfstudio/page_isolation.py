@@ -5,6 +5,7 @@ NOT a security sandbox: workers retain caller filesystem privileges.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import multiprocessing as mp
 import os
@@ -14,6 +15,30 @@ from pathlib import Path
 
 from .jobs import sha256_file
 from .windows_job import WindowsJob, WindowsJobError
+
+
+def _sha256_file_before_deadline(path: str | Path, deadline: float,
+                                 chunk_bytes: int = 1024 * 1024) -> str:
+    """Hash a source in bounded chunks while honoring the operation wall deadline."""
+    if chunk_bytes < 1:
+        raise ValueError("chunk_bytes must be positive")
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("PDF operation deadline exceeded during source hashing")
+            block = stream.read(chunk_bytes)
+            if not block:
+                break
+            digest.update(block)
+    if time.monotonic() >= deadline:
+        raise TimeoutError("PDF operation deadline exceeded during source hashing")
+    return digest.hexdigest()
+
+
+def _require_deadline(deadline: float) -> None:
+    if time.monotonic() >= deadline:
+        raise TimeoutError("PDF operation deadline exceeded")
 
 
 def _worker(pipe, gate, action, sources, output, selection, digests, memory_bytes, cpu_seconds, max_pages):
@@ -84,9 +109,22 @@ def run_page_operation(action: str, sources, output, selection=None, *,
         raise ValueError("extract requires one source")
     if action == "merge" and len(sources) < 2:
         raise PageToolError("merge requires at least two PDF inputs")
-    resolved = tuple(_validated_source(p) for p in sources)
-    destination = _validated_output(output, resolved)
-    digests = tuple(sha256_file(p) for p in resolved)
+    # The timeout is a wall-clock budget for the entire operation, including
+    # parent-side input validation and full-file SHA-256 preflight. Without this,
+    # a large or slow source could spend unbounded time hashing before spawn.
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        resolved_items = []
+        for source in sources:
+            _require_deadline(deadline)
+            resolved_items.append(_validated_source(source))
+            _require_deadline(deadline)
+        resolved = tuple(resolved_items)
+        destination = _validated_output(output, resolved)
+        _require_deadline(deadline)
+        digests = tuple(_sha256_file_before_deadline(p, deadline) for p in resolved)
+    except TimeoutError as exc:
+        raise PageToolError("isolated page operation timed out") from exc
     # The child writes only into a private same-filesystem staging directory.
     # The parent alone publishes the finished result after worker acknowledgement
     # and source revalidation. A timed-out/crashed child cannot leave a new final
@@ -108,7 +146,6 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                            max_pages), daemon=True)
         # The operation deadline includes process startup and Windows Job
         # Object assignment, not just the wait for the worker's first response.
-        deadline = time.monotonic() + timeout_seconds
         try:
             proc.start()
             child.close()
@@ -136,10 +173,23 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                 raise PageToolError("isolated page worker did not exit cleanly")
             if not staged.is_file() or staged.stat().st_size == 0:
                 raise PageToolError("isolated page operation did not stage a PDF")
-            if any(sha256_file(p) != digest for p, digest in zip(resolved, digests)):
+            try:
+                _require_deadline(deadline)
+                unchanged = all(
+                    _sha256_file_before_deadline(path, deadline) == digest
+                    for path, digest in zip(resolved, digests)
+                )
+                _require_deadline(deadline)
+            except TimeoutError as exc:
+                raise PageToolError("isolated page operation timed out") from exc
+            if not unchanged:
                 raise PageToolError("source changed during page operation")
             # This is the *only* publication of the caller-visible destination.
             # A pre-existing file or symlink causes FileExistsError, never replace.
+            try:
+                _require_deadline(deadline)
+            except TimeoutError as exc:
+                raise PageToolError("isolated page operation timed out") from exc
             os.link(staged, destination)
             return destination
         finally:
