@@ -1,4 +1,5 @@
 """Bounded extract/merge contracts using synthetic PDFs, never private data."""
+import errno
 import os
 import tempfile
 import time
@@ -9,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from pypdf import PdfReader, PdfWriter
-from pdfstudio.page_tools import PageToolError, extract_pages, merge_pdfs
+from pdfstudio.page_tools import PageToolError, _publish, extract_pages, merge_pdfs
 from pdfstudio.jobs import sha256_file
 from pdfstudio.page_isolation import _reserve_staging_file, _verify_staging_file
 
@@ -202,6 +203,60 @@ class IsolatedPageToolTests(unittest.TestCase):
         self.assertEqual(self.a.read_bytes(), before)
         self.assertFalse(self.out.exists())
         self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
+    def test_destination_created_at_publication_race_is_never_replaced(self):
+        sentinel = b"created by concurrent owner"
+        real_link = os.link
+
+        def create_destination_then_link(staged, destination):
+            Path(destination).write_bytes(sentinel)
+            return real_link(staged, destination)
+
+        with mock.patch("pdfstudio.page_isolation.os.link", side_effect=create_destination_then_link):
+            with self.assertRaises(FileExistsError):
+                extract_pages(self.a, self.out, "1")
+
+        self.assertEqual(self.out.read_bytes(), sentinel)
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
+    def test_staging_inode_replaced_at_publication_is_rejected_and_not_left_as_output(self):
+        real_link = os.link
+
+        def replace_staging_then_link(staged, destination):
+            staged = Path(staged)
+            displaced = staged.with_name("original-reservation.bin")
+            staged.rename(displaced)
+            staged.write_bytes(b"%PDF-1.7\\nreplacement inode")
+            return real_link(staged, destination)
+
+        with mock.patch("pdfstudio.page_isolation.os.link", side_effect=replace_staging_then_link):
+            with self.assertRaisesRegex(PageToolError, "published PDF identity changed"):
+                extract_pages(self.a, self.out, "1")
+
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
+    def test_mid_write_disk_full_cleans_partial_stage_and_preserves_source(self):
+        staged = self.root / "reserved-result.pdf"
+        staged.write_bytes(b"\\0" * 4096)
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        source_before = self.a.read_bytes()
+        original_write = __import__(
+            "pdfstudio.page_tools", fromlist=["_CappedWriter"]
+        )._CappedWriter.write
+
+        def partial_then_enospc(capped, data):
+            original_write(capped, data[:max(1, len(data) // 2)])
+            raise OSError(errno.ENOSPC, "simulated concurrent disk exhaustion")
+
+        with mock.patch("pdfstudio.page_tools._CappedWriter.write", new=partial_then_enospc):
+            with self.assertRaisesRegex(OSError, "concurrent disk exhaustion"):
+                _publish(writer, staged, (self.a,), (sha256_file(self.a),), 1024 * 1024)
+
+        self.assertFalse(staged.exists())
+        self.assertEqual(self.a.read_bytes(), source_before)
+        self.assertFalse(self.out.exists())
 
     def test_invalid_limits_rejected(self):
         for settings in ({"max_pages": 0}, {"max_memory_mb": True},
