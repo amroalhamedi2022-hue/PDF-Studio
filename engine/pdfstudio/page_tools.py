@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import math
 import os
+import re
+import stat
+import tempfile
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Iterable
@@ -481,3 +484,195 @@ def rotate_pages(source: str | Path, output: str | Path,
                               timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
                               max_pages=max_pages, max_output_bytes=max_output_bytes,
                               free_space_margin_bytes=free_space_margin_bytes)
+
+
+
+def split_pdf(source: str | Path, output_dir: str | Path,
+              ranges: Iterable[Iterable[int] | str], *,
+              base_name: str = "split",
+              timeout_seconds: float = 90.0, max_memory_mb: int = 768,
+              max_pages: int = 10000,
+              max_output_bytes: int = 1024 * 1024 * 1024,
+              max_total_output_bytes: int = 1024 * 1024 * 1024,
+              free_space_margin_bytes: int = 16 * 1024 * 1024) -> tuple[Path, ...]:
+    """Split a PDF into explicitly selected page groups without clobbering outputs.
+
+    Each group is either a one-based inclusive range string (for example
+    "1-3,5") or an iterable of zero-based page indexes. Up to 100 groups are
+    accepted. Groups are independently extracted by the existing isolated
+    worker, then published as a set only after every part is staged and the
+    source SHA-256 is unchanged. A failure rolls back only outputs whose file
+    identity and contents still match this call; paths changed concurrently are
+    preserved. Timeouts apply per part. The total-output cap applies across
+    all parts. Overlapping groups are allowed intentionally, like extraction.
+    """
+    if isinstance(ranges, (str, bytes, bytearray)):
+        raise PageToolError("ranges must be an iterable of page groups, not one range")
+    try:
+        groups = list(ranges)
+    except TypeError as exc:
+        raise PageToolError("ranges must be an iterable of page groups") from exc
+    if not groups or len(groups) > 100:
+        raise PageToolError("split requires between 1 and 100 page groups")
+
+    normalized: list[Iterable[int] | str] = []
+    for group in groups:
+        if isinstance(group, str):
+            if not group.strip():
+                raise PageToolError("split page ranges must be nonempty")
+            normalized.append(group)
+            continue
+        try:
+            selected = list(group)
+        except TypeError as exc:
+            raise PageToolError("each split group must be a range string or iterable of indexes") from exc
+        if not selected or any(not isinstance(i, int) or isinstance(i, bool) for i in selected):
+            raise PageToolError("each split group must contain integer 0-based page indexes")
+        normalized.append(selected)
+
+    if (not isinstance(base_name, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", base_name) is None):
+        raise PageToolError("base_name must be 1-80 ASCII letters, digits, underscores or hyphens")
+    for key, value in (("max_memory_mb", max_memory_mb), ("max_pages", max_pages),
+                       ("max_output_bytes", max_output_bytes),
+                       ("max_total_output_bytes", max_total_output_bytes)):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"{key} must be a positive integer")
+    if max_total_output_bytes < 5:
+        raise ValueError("max_total_output_bytes must allow a PDF header")
+    if (not isinstance(free_space_margin_bytes, int)
+            or isinstance(free_space_margin_bytes, bool) or free_space_margin_bytes < 0):
+        raise ValueError("free_space_margin_bytes must be a non-negative integer")
+    if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+        raise ValueError("timeout_seconds must be finite and positive")
+
+    raw_directory = Path(output_dir)
+    if raw_directory.is_symlink():
+        raise PageToolError("split output directory must not be a symlink")
+    directory = raw_directory.resolve(strict=True)
+    if not directory.is_dir():
+        raise PageToolError("split output path must be an existing directory")
+    src = _validated_source(source)
+    targets = tuple(directory / f"{base_name}-part-{index:03d}.pdf"
+                    for index in range(1, len(normalized) + 1))
+    if any(os.path.lexists(target) for target in targets):
+        raise FileExistsError("one or more split output files already exist")
+
+    source_digest = sha256_file(src)
+    total_bytes = 0
+    # target, expected identity, expected size, expected mtime, expected digest
+    published: list[tuple[Path, tuple[int, int], int, int, str | None]] = []
+
+    def rollback_published() -> bool:
+        """Remove only outputs that still match the exact files created here."""
+        incomplete = False
+        for target, identity, size, mtime_ns, digest in reversed(published):
+            try:
+                info = target.lstat()
+                if (not stat.S_ISREG(info.st_mode)
+                        or (info.st_dev, info.st_ino) != identity
+                        or info.st_size != size or info.st_mtime_ns != mtime_ns):
+                    incomplete = True
+                    continue
+                if digest is not None and sha256_file(target) != digest:
+                    incomplete = True
+                    continue
+                target.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                incomplete = True
+        return incomplete
+
+    try:
+        with tempfile.TemporaryDirectory(prefix=".pdfstudio-split-", dir=directory) as temp_name:
+            staging_directory = Path(temp_name)
+            staged_files: list[Path] = []
+            for index, group in enumerate(normalized):
+                if sha256_file(src) != source_digest:
+                    raise PageToolError("source changed during PDF split")
+                remaining = max_total_output_bytes - total_bytes
+                if remaining < 5:
+                    raise PageToolError("split exceeds configured total output byte limit")
+                part_cap = min(max_output_bytes, remaining)
+                staged = staging_directory / targets[index].name
+                extract_pages(
+                    src, staged, group,
+                    timeout_seconds=timeout_seconds,
+                    max_memory_mb=max_memory_mb,
+                    max_pages=max_pages,
+                    max_output_bytes=part_cap,
+                    free_space_margin_bytes=free_space_margin_bytes,
+                )
+                info = staged.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_size < 5
+                        or info.st_size > part_cap):
+                    raise PageToolError("split worker produced an invalid part")
+                with staged.open("rb") as stream:
+                    if stream.read(5) != b"%PDF-":
+                        raise PageToolError("split worker produced a non-PDF part")
+                total_bytes += info.st_size
+                if total_bytes > max_total_output_bytes:
+                    raise PageToolError("split exceeds configured total output byte limit")
+                staged_files.append(staged)
+
+            if sha256_file(src) != source_digest:
+                raise PageToolError("source changed during PDF split")
+            if any(os.path.lexists(target) for target in targets):
+                raise FileExistsError("a split output path was created concurrently")
+
+            try:
+                for staged, target in zip(staged_files, targets):
+                    staged_info = staged.lstat()
+                    staged_identity = (staged_info.st_dev, staged_info.st_ino)
+                    os.link(staged, target)
+                    try:
+                        target_info = target.lstat()
+                    except OSError as exc:
+                        raise PageToolError("split output disappeared during publication") from exc
+                    target_identity = (target_info.st_dev, target_info.st_ino)
+                    if (not stat.S_ISREG(target_info.st_mode)
+                            or target_identity != staged_identity):
+                        # Remove only if this destination still aliases the staged file.
+                        try:
+                            current_target = target.lstat()
+                            current_stage = staged.lstat()
+                            if (stat.S_ISREG(current_target.st_mode)
+                                    and stat.S_ISREG(current_stage.st_mode)
+                                    and (current_target.st_dev, current_target.st_ino)
+                                    == (current_stage.st_dev, current_stage.st_ino)):
+                                target.unlink()
+                        except OSError:
+                            pass
+                        raise PageToolError("split output identity changed during publication")
+
+                    # Record immediately so a later validation failure can safely roll back.
+                    published.append((target, staged_identity, target_info.st_size,
+                                      target_info.st_mtime_ns, None))
+                    digest = sha256_file(target)
+                    stable_info = target.lstat()
+                    if ((stable_info.st_dev, stable_info.st_ino) != staged_identity
+                            or stable_info.st_size != target_info.st_size
+                            or stable_info.st_mtime_ns != target_info.st_mtime_ns):
+                        raise PageToolError("split output changed during validation")
+                    published[-1] = (target, staged_identity, stable_info.st_size,
+                                     stable_info.st_mtime_ns, digest)
+                    with target.open("rb") as stream:
+                        if stream.read(5) != b"%PDF-":
+                            raise PageToolError("published split part has no PDF header")
+
+                if sha256_file(src) != source_digest:
+                    raise PageToolError("source changed before split publication completed")
+            except BaseException as exc:
+                if rollback_published():
+                    raise PageToolError(
+                        "split failed; output paths changed concurrently and were preserved"
+                    ) from exc
+                raise
+
+        return targets
+    except BaseException:
+        # A staging failure occurs before publication and leaves no final outputs.
+        # Publication failures are rolled back inside the staging-directory scope.
+        raise

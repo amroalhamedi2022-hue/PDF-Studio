@@ -506,3 +506,22 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - No APK/EXE build: the question is the page-list transformation contract, directly answered by source and isolated-worker tests. No new dependency or copied third-party implementation.
 - Google Drive `PDF Studio — HANDOFF` sync remains FAILED / NOT AVAILABLE in this runtime; no Drive write is claimed.
 - Continue B01; do not open B02.
+
+
+## 2026-10-26 — B01 page operations: bounded explicit-range split
+
+**Active milestone:** B01 — Resource-Bounded PDF Core remains **OPEN**. This is the next linked F08.01 slice; it does not open B02 or claim full page-tool acceptance.
+
+**Production change:** `split_pdf(source, output_dir, ranges, base_name="split")` accepts 1–100 explicit page groups. A group may use the existing one-based inclusive range syntax or zero-based integer indexes. Every part is created by the existing isolated `extract_pages` worker, with a per-part timeout/output cap and an aggregate output-byte cap. The source SHA is checked across the split. Final filenames are preflighted as a set, staged in a private same-filesystem directory, then published with no-clobber hard links only after all parts succeed. On a later failure, no final parts are published; a publication rollback removes only outputs whose recorded identity, size, mtime and digest still match this operation. A path that changes concurrently is preserved. No new dependency or copied implementation was introduced.
+
+**Milestone acceptance criteria for this slice:** (1) split outputs reopen and preserve requested page order; (2) original source bytes remain unchanged; (3) a pre-existing target is never overwritten and blocks the whole split before work starts; (4) an invalid later range leaves no earlier final part; (5) unsafe names and more than 100 parts fail closed; (6) aggregate output limits reject without final outputs; (7) exact-head source CI passes on Ubuntu and Windows.
+
+**Test additions:** five synthetic tests in `tests/test_page_tools.py` cover multi-part page fidelity/source preservation, all-target preflight/no-clobber, rollback after a later invalid range, path-name/part-count validation, and aggregate output cap. Tests use generated blank PDFs only; no user documents are included.
+
+**Performance limitation:** this first range-based splitter invokes the bounded extraction worker once per part and therefore reparses/re-hashes the source per part. It is intentionally bounded and capped at 100 parts, but it is not yet the preferred path for very large documents with many parts. A future same-worker single-pass split, split-by-bookmarks/size, and richer progress/cancel reporting remain outside this slice.
+
+**NOT TESTED:** Android/Windows UI and device acceptance, visual rendering, bookmark/size split, realistic >=2 GiB/scanned PDFs, OCR, and crash/reboot recovery during a multi-output publication. No APK/EXE build is useful for this Python page-selection contract; source and isolated-worker integration tests directly answer it.
+
+**Google Drive handoff:** FAILED / NOT AVAILABLE in this runtime because no Google Docs/Drive write connector is exposed; the specified PDF Studio handoff was not updated.
+
+**Next:** run exact-head Ubuntu/Windows CI, record the evidence here and in `docs/ACCEPTANCE.md`, then continue the same B01 milestone. Do not start B02.

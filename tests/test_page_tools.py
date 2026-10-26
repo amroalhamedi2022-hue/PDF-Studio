@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from pdfstudio.page_tools import (PageToolError, crop_pages, delete_pages, extract_pages,
-                                  merge_pdfs, reorder_pages, rotate_pages)
+                                  merge_pdfs, reorder_pages, rotate_pages, split_pdf)
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DictionaryObject, NameObject
 
@@ -188,6 +188,65 @@ class PageToolsTests(unittest.TestCase):
         with self.assertRaises(PageToolError):
             extract_pages(self.a, self.out, [0])
         self.assertFalse(self.out.exists())
+
+
+    def test_split_pdf_by_ranges_creates_ordered_parts_without_mutating_source(self):
+        before = self.a.read_bytes()
+        out_dir = self.root / "parts"
+        out_dir.mkdir()
+        outputs = split_pdf(self.a, out_dir, ["1-2", [2]], base_name="report")
+        self.assertEqual([p.name for p in outputs],
+                         ["report-part-001.pdf", "report-part-002.pdf"])
+        with outputs[0].open("rb") as stream:
+            self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages],
+                             [300.0, 400.0])
+        with outputs[1].open("rb") as stream:
+            self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages],
+                             [500.0])
+        self.assertEqual(before, self.a.read_bytes())
+        self.assertEqual(list(out_dir.glob(".pdfstudio-split-*")), [])
+        self.assertEqual(list(out_dir.glob(".pdfstudio-stage-*")), [])
+
+    def test_split_pdf_preflights_all_outputs_without_clobber(self):
+        out_dir = self.root / "parts"
+        out_dir.mkdir()
+        sentinel = b"preserve concurrent output"
+        (out_dir / "report-part-002.pdf").write_bytes(sentinel)
+        with self.assertRaises(FileExistsError):
+            split_pdf(self.a, out_dir, ["1", "2"], base_name="report")
+        self.assertFalse((out_dir / "report-part-001.pdf").exists())
+        self.assertEqual((out_dir / "report-part-002.pdf").read_bytes(), sentinel)
+
+    def test_split_pdf_rolls_back_staged_parts_when_later_range_is_invalid(self):
+        out_dir = self.root / "parts"
+        out_dir.mkdir()
+        before = self.a.read_bytes()
+        with self.assertRaises(PageToolError):
+            split_pdf(self.a, out_dir, ["1-2", "9"], base_name="report")
+        self.assertFalse((out_dir / "report-part-001.pdf").exists())
+        self.assertFalse((out_dir / "report-part-002.pdf").exists())
+        self.assertEqual(before, self.a.read_bytes())
+        self.assertEqual(list(out_dir.glob(".pdfstudio-split-*")), [])
+        self.assertEqual(list(out_dir.glob(".pdfstudio-stage-*")), [])
+
+    def test_split_pdf_rejects_unsafe_names_and_excessive_part_count(self):
+        out_dir = self.root / "parts"
+        out_dir.mkdir()
+        for name in ("../escape", ".hidden", "bad/name", ""):
+            with self.subTest(name=name), self.assertRaises(PageToolError):
+                split_pdf(self.a, out_dir, ["1"], base_name=name)
+        with self.assertRaises(PageToolError):
+            split_pdf(self.a, out_dir, [["0"]] * 101, base_name="many")
+        self.assertEqual(list(out_dir.iterdir()), [])
+
+    def test_split_pdf_total_output_cap_fails_without_final_outputs(self):
+        out_dir = self.root / "parts"
+        out_dir.mkdir()
+        with self.assertRaises((PageToolError, ValueError)):
+            split_pdf(self.a, out_dir, ["1", "2"], base_name="report",
+                      max_total_output_bytes=5)
+        self.assertFalse((out_dir / "report-part-001.pdf").exists())
+        self.assertFalse((out_dir / "report-part-002.pdf").exists())
 
 
 if __name__ == '__main__':
