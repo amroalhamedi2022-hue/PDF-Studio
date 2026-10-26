@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pdfstudio.page_tools import PageToolError, extract_pages, merge_pdfs, rotate_pages
+from pdfstudio.page_tools import PageToolError, crop_pages, extract_pages, merge_pdfs, rotate_pages
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DictionaryObject, NameObject
 
@@ -42,6 +42,44 @@ class PageToolsTests(unittest.TestCase):
         merge_pdfs([self.a, self.b], self.out)
         with self.out.open('rb') as stream:
             self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages], [300, 400, 500, 600, 700])
+
+    def test_crop_selected_pages_sets_cropbox_and_preserves_source(self):
+        before = self.a.read_bytes()
+        crop_pages(self.a, self.out, (10, 20, 250, 650), [0, 2])
+        with self.out.open('rb') as stream:
+            reader = PdfReader(stream)
+            self.assertEqual(len(reader.pages), 3)
+            self.assertEqual(
+                [(float(p.cropbox.left), float(p.cropbox.bottom),
+                  float(p.cropbox.right), float(p.cropbox.top)) for p in reader.pages],
+                [(10.0, 20.0, 250.0, 650.0), (0.0, 0.0, 400.0, 700.0),
+                 (10.0, 20.0, 250.0, 650.0)],
+            )
+            self.assertEqual([float(p.mediabox.width) for p in reader.pages],
+                             [300.0, 400.0, 500.0])
+        self.assertEqual(before, self.a.read_bytes())
+
+    def test_crop_rejects_invalid_geometry_and_out_of_bounds_without_output(self):
+        invalid_boxes = (
+            (10, 10, 10, 20),
+            (10, 30, 20, 20),
+            (float('nan'), 0, 10, 10),
+            (True, 0, 10, 10),
+        )
+        for box in invalid_boxes:
+            with self.subTest(box=box), self.assertRaises(PageToolError):
+                crop_pages(self.a, self.out, box, [0])
+        with self.assertRaises(PageToolError):
+            crop_pages(self.a, self.out, (0, 0, 301, 650), [0])
+        with self.assertRaises(PageToolError):
+            crop_pages(self.a, self.out, (10, 20, 250, 650), [3])
+        self.assertFalse(self.out.exists())
+
+    def test_crop_refuses_existing_output_without_clobber(self):
+        self.out.write_bytes(b'keep this')
+        with self.assertRaises(FileExistsError):
+            crop_pages(self.a, self.out, (10, 20, 250, 650), [0])
+        self.assertEqual(self.out.read_bytes(), b'keep this')
 
     def test_rotate_selected_pages_preserves_order_and_source(self):
         before = self.a.read_bytes()

@@ -231,7 +231,10 @@ def _worker(pipe, gate, action, sources, output, selection, digests, memory_byte
             resource.setrlimit(resource.RLIMIT_FSIZE, (file_size_soft, hard_file_size))
         import logging
         logging.getLogger("pypdf").setLevel(logging.CRITICAL)
-        from .page_tools import _extract_pages_direct, _merge_pdfs_direct, _rotate_pages_direct, PageToolError
+        from .page_tools import (
+            _crop_pages_direct, _extract_pages_direct, _merge_pdfs_direct,
+            _rotate_pages_direct, PageToolError,
+        )
         # Reject a changed source before parsing and immediately before publishing.
         if any(sha256_file(p) != h for p, h in zip(sources, digests)):
             pipe.send(("error", "source-changed"))
@@ -245,6 +248,10 @@ def _worker(pipe, gate, action, sources, output, selection, digests, memory_byte
             pages, rotation = selection
             _rotate_pages_direct(sources[0], output, pages, rotation, digests,
                                  max_pages, max_output_bytes)
+        elif action == "crop":
+            pages, box = selection
+            _crop_pages_direct(sources[0], output, pages, box, digests,
+                               max_pages, max_output_bytes)
         else:
             pipe.send(("error", "operation"))
             return
@@ -280,7 +287,7 @@ def run_page_operation(action: str, sources, output, selection=None, *,
                 raise ImportError("resource limits unavailable")
         except ImportError as exc:
             raise PageToolError("OS resource limits unavailable") from exc
-    if action not in ("extract", "merge", "rotate"):
+    if action not in ("extract", "merge", "rotate", "crop"):
         raise ValueError("unsupported operation")
     for key, value in (("max_memory_mb", max_memory_mb), ("max_pages", max_pages),
                        ("max_output_bytes", max_output_bytes)):
@@ -292,7 +299,7 @@ def run_page_operation(action: str, sources, output, selection=None, *,
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) \
             or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be finite and positive")
-    if action in ("extract", "rotate") and len(sources) != 1:
+    if action in ("extract", "rotate", "crop") and len(sources) != 1:
         raise ValueError(f"{action} requires one source")
     if action == "merge" and len(sources) < 2:
         raise PageToolError("merge requires at least two PDF inputs")

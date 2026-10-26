@@ -483,3 +483,15 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **NOT TESTED:** UI controls, visual render/orientation on Android or Windows, crop/deskew/reorder/delete/split, real scanned/large PDFs, OCR engine, and full F08.01 acceptance.
 - Google Drive Handoff sync: FAILED / NOT AVAILABLE because this runtime exposes no Google Docs/Drive write connector; the specified document was not updated and no sync success is claimed.
 - Next: verify current SHA on Ubuntu + Windows, fix any regression, then keep B01 active for worker ownership/recovery and realistic large-file tests. No APK/EXE build is useful for this isolated Python page-transform API.
+
+## 2026-10-26 — B01 page-operation slice: bounded CropBox cropping
+
+- Added `crop_pages(source, output, box, pages="all")` with the box expressed as absolute PDF user-space coordinates `(left, bottom, right, top)`. Coordinates must be finite, form a positive rectangle, and remain within every selected page's MediaBox.
+- Crop changes only the PDF CropBox; it is reversible and **does not erase underlying content or provide redaction**. Encrypted and apparently signed inputs remain fail-closed through shared preflight. Original bytes are hash-checked and never written.
+- Reuses the existing isolated worker, wall deadline, memory/CPU/output limits, disk preflight, same-filesystem staging identity and atomic no-clobber publication.
+- Added source tests for selected-page geometry/order, invalid/non-finite/out-of-bounds boxes, existing-output preservation and source-byte integrity; added an isolated-worker integration test.
+- **CI status at checkpoint authoring: PENDING** for the exact commit containing source + tests. Do not mark F08.01 PASS until Ubuntu + Windows source checks complete successfully.
+- **NOT TESTED:** rendered appearance in Android/Windows PDF readers, real scanned/large corpus, crop UI, and any destructive content removal. CropBox is not a secure redaction mechanism.
+- No new dependency or copied third-party implementation. Uses the already pinned pypdf dependency. No APK/EXE build: the question is PDF CropBox semantics and fail-closed source behavior, directly answered by Python integration tests.
+- Google Drive `PDF Studio — HANDOFF` sync remains FAILED / NOT AVAILABLE in this runtime because no Drive/Docs write connector is exposed; no successful sync is claimed.
+- Continue B01; do not open B02 until B01 acceptance is complete.

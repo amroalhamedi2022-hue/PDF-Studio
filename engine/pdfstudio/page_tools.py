@@ -7,6 +7,7 @@ no-clobber publication to the parent process.
 
 from __future__ import annotations
 
+import math
 import os
 from contextlib import ExitStack
 from pathlib import Path
@@ -122,6 +123,21 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
         raise
 
 
+def _normalize_crop_box(box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """Validate an absolute PDF user-space crop box (left, bottom, right, top)."""
+    if not isinstance(box, (tuple, list)) or len(box) != 4:
+        raise PageToolError("crop box must contain left, bottom, right, and top")
+    coordinates: list[float] = []
+    for value in box:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise PageToolError("crop box coordinates must be finite numbers")
+        coordinates.append(float(value))
+    left, bottom, right, top = coordinates
+    if right <= left or top <= bottom:
+        raise PageToolError("crop box must have positive width and height")
+    return left, bottom, right, top
+
+
 def _extract_pages_direct(source: str | Path, output: str | Path, pages: Iterable[int] | str,
                           digests: tuple[str, ...], max_pages: int,
                           max_output_bytes: int) -> Path:
@@ -213,6 +229,56 @@ def _rotate_pages_direct(source: str | Path, output: str | Path,
     return dst
 
 
+def _crop_pages_direct(source: str | Path, output: str | Path,
+                      pages: Iterable[int] | str, box: tuple[float, float, float, float],
+                      digests: tuple[str, ...], max_pages: int,
+                      max_output_bytes: int) -> Path:
+    """Set selected pages' CropBox to absolute PDF user-space coordinates.
+
+    This is a reversible viewing/printing crop; it does not remove hidden
+    content from the page content stream and is not a redaction operation.
+    """
+    left, bottom, right, top = _normalize_crop_box(box)
+    src = _validated_source(source)
+    dst = _validated_output(output, (src,), allow_existing_staging=True)
+    with src.open("rb") as fh:
+        reader = PdfReader(fh, strict=False)
+        _preflight_reader(reader)
+        count = len(reader.pages)
+        if count < 1 or count > max_pages:
+            raise PageToolError("page count exceeds configured limit")
+        if isinstance(pages, str):
+            try:
+                selected = parse_page_ranges(pages, count)
+            except PageRangeError as exc:
+                raise PageToolError(str(exc)) from exc
+        else:
+            try:
+                selected = list(pages)
+            except TypeError as exc:
+                raise PageToolError("provide a range string or iterable of 0-based page indexes") from exc
+            if not selected or any(not isinstance(i, int) or isinstance(i, bool) for i in selected):
+                raise PageToolError("provide one or more integer 0-based page indexes")
+        if any(i < 0 or i >= count for i in selected):
+            raise PageToolError(f"page index outside 0..{count - 1}")
+
+        selected_set = set(selected)
+        writer = PdfWriter()
+        for index, page in enumerate(reader.pages):
+            if index in selected_set:
+                media = page.mediabox
+                if (left < float(media.left) or bottom < float(media.bottom)
+                        or right > float(media.right) or top > float(media.top)):
+                    raise PageToolError(
+                        f"crop box must stay inside page {index}'s media box"
+                    )
+                page.cropbox.lower_left = (left, bottom)
+                page.cropbox.upper_right = (right, top)
+            writer.add_page(page)
+        _publish(writer, dst, (src,), digests, max_output_bytes)
+    return dst
+
+
 def extract_pages(source: str | Path, output: str | Path, pages: Iterable[int] | str,
                   *, timeout_seconds: float = 90.0, max_memory_mb: int = 768,
                   max_pages: int = 10000,
@@ -240,6 +306,33 @@ def merge_pdfs(sources: Iterable[str | Path], output: str | Path, *,
                               free_space_margin_bytes=free_space_margin_bytes)
 
  
+
+def crop_pages(source: str | Path, output: str | Path,
+               box: tuple[float, float, float, float],
+               pages: Iterable[int] | str = "all", *,
+               timeout_seconds: float = 90.0, max_memory_mb: int = 768,
+               max_pages: int = 10000,
+               max_output_bytes: int = 1024 * 1024 * 1024,
+               free_space_margin_bytes: int = 16 * 1024 * 1024) -> Path:
+    """Set selected pages' CropBox using (left, bottom, right, top) PDF coordinates.
+
+    Range strings are one-based inclusive; integer iterables use zero-based
+    indexes. CropBox cropping is reversible and does not sanitize hidden content.
+    """
+    from .page_isolation import run_page_operation
+    normalized_box = _normalize_crop_box(box)
+    if isinstance(pages, str):
+        selection = pages
+    else:
+        try:
+            selection = list(pages)
+        except TypeError as exc:
+            raise PageToolError("pages must be a range string or iterable of indexes") from exc
+    return run_page_operation("crop", (source,), output, (selection, normalized_box),
+                              timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+                              max_pages=max_pages, max_output_bytes=max_output_bytes,
+                              free_space_margin_bytes=free_space_margin_bytes)
+
 def rotate_pages(source: str | Path, output: str | Path,
                  pages: Iterable[int] | str = "all", *, degrees: int = 90,
                  timeout_seconds: float = 90.0, max_memory_mb: int = 768,

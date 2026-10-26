@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from pypdf import PdfReader, PdfWriter
-from pdfstudio.page_tools import PageToolError, _publish, extract_pages, merge_pdfs
+from pdfstudio.page_tools import PageToolError, _publish, crop_pages, extract_pages, merge_pdfs
 from pdfstudio.jobs import sha256_file
 from pdfstudio.page_isolation import _reserve_staging_file, _verify_staging_file
 
@@ -42,6 +42,25 @@ class IsolatedPageToolTests(unittest.TestCase):
         with self.out.open("rb") as stream:
             self.assertEqual([float(p.mediabox.width) for p in PdfReader(stream).pages], [200, 300, 400])
         self.assertEqual((self.a.read_bytes(), self.b.read_bytes()), originals)
+
+    def test_crop_runs_in_isolated_worker_and_keeps_source_unchanged(self):
+        before = self.a.read_bytes()
+        crop_pages(self.a, self.out, (10, 10, 190, 490), [0])
+        with self.out.open("rb") as stream:
+            reader = PdfReader(stream)
+            self.assertEqual(len(reader.pages), 2)
+            self.assertEqual(
+                (float(reader.pages[0].cropbox.left), float(reader.pages[0].cropbox.bottom),
+                 float(reader.pages[0].cropbox.right), float(reader.pages[0].cropbox.top)),
+                (10.0, 10.0, 190.0, 490.0),
+            )
+            self.assertEqual(
+                (float(reader.pages[1].cropbox.left), float(reader.pages[1].cropbox.bottom),
+                 float(reader.pages[1].cropbox.right), float(reader.pages[1].cropbox.top)),
+                (0.0, 0.0, 300.0, 500.0),
+            )
+        self.assertEqual(self.a.read_bytes(), before)
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
     def test_merge_total_page_cap_rejects_without_output(self):
         with self.assertRaises(PageToolError):
