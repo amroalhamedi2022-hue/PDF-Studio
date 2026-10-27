@@ -493,6 +493,10 @@ class PageToolsTests(unittest.TestCase):
         staging.write_bytes(b"reserved")
 
         class ReplacingWriter:
+            @property
+            def pages(self):
+                return []
+
             def write(self, stream):
                 original_path = staging
                 # Close the open descriptor first so the same deterministic
@@ -533,6 +537,10 @@ class PageToolsTests(unittest.TestCase):
         staging.write_bytes(b"reserved")
 
         class MalformedWriter:
+            @property
+            def pages(self):
+                return []
+
             def write(self, stream):
                 stream.write(b"%PDF-1.7\\nnot-a-valid-page-tree\\n")
 
