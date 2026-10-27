@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pdfstudio.page_tools import (PageToolError, crop_pages, delete_pages, extract_pages,
+from pdfstudio.jobs import sha256_file
+from pdfstudio.page_tools import (PageToolError, _publish, crop_pages, delete_pages, extract_pages,
                                   merge_pdfs, reorder_pages, rotate_pages, split_pdf, split_pdf_by_bookmarks)
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DictionaryObject, NameObject
@@ -341,6 +342,37 @@ class PageToolsTests(unittest.TestCase):
                       max_total_output_bytes=5)
         self.assertFalse((out_dir / "report-part-001.pdf").exists())
         self.assertFalse((out_dir / "report-part-002.pdf").exists())
+
+
+    def test_publish_rejects_page_count_mismatch_and_removes_staging(self):
+        staging = self.root / "reserved-count.pdf"
+        staging.write_bytes(b"reserved")
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+
+        with self.assertRaisesRegex(PageToolError, "page count mismatch"):
+            _publish(
+                writer, staging, (self.a,), (sha256_file(self.a),),
+                1024 * 1024, expected_pages=2,
+            )
+        self.assertFalse(staging.exists())
+        self.assertEqual(len(PdfReader(self.a).pages), 3)
+
+    def test_publish_rejects_malformed_pdf_and_removes_staging(self):
+        staging = self.root / "reserved-malformed.pdf"
+        staging.write_bytes(b"reserved")
+
+        class MalformedWriter:
+            def write(self, stream):
+                stream.write(b"%PDF-1.7\\nnot-a-valid-page-tree\\n")
+
+        with self.assertRaisesRegex(PageToolError, "structural validation"):
+            _publish(
+                MalformedWriter(), staging, (self.a,), (sha256_file(self.a),),
+                1024 * 1024, expected_pages=1,
+            )
+        self.assertFalse(staging.exists())
+        self.assertEqual(len(PdfReader(self.a).pages), 3)
 
 
 if __name__ == '__main__':
