@@ -158,6 +158,38 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(self.journal.resumable_pages(first_job, "ocr"), [0])
         self.assertEqual(self.journal.resumable_pages(second_job, "ocr"), [])
 
+    def test_replaced_checkpoint_path_with_identical_bytes_is_not_trusted(self):
+        job = self.journal.create_job(self.original, self.output, 2)
+        self.journal.set_state(job, "running")
+        artifact = self.root / "checkpoint-page.txt"
+        replacement = self.root / "replacement-page.txt"
+        payload = b"same bytes, different file identity"
+        artifact.write_bytes(payload)
+        self.journal.checkpoint(job, 0, "ocr", artifact)
+        recorded_identity = self.journal._artifact_identity(artifact)
+        if recorded_identity is None:
+            self.skipTest("filesystem does not expose a useful inode identity")
+
+        replacement.write_bytes(payload)
+        replacement_identity = self.journal._artifact_identity(replacement)
+        if replacement_identity is None or replacement_identity == recorded_identity:
+            self.skipTest("filesystem cannot distinguish the replacement file identity")
+        expected_digest = sha256_file(artifact)
+        os.replace(replacement, artifact)
+        self.assertEqual(sha256_file(artifact), expected_digest)
+        self.assertNotEqual(self.journal._artifact_identity(artifact), recorded_identity)
+
+        # A byte-identical replacement must not be mistaken for the original
+        # immutable checkpoint merely because its SHA-256 still matches.
+        self.assertFalse(self.journal.verified_checkpoint(job, 0, "ocr"))
+        self.assertEqual(self.journal.resumable_pages(job, "ocr"), [])
+        audit = self.journal.recovery_snapshot(job, "ocr")
+        self.assertEqual(audit["valid_pages"], ())
+        self.assertEqual(audit["invalid_pages"], (0,))
+        self.assertEqual(audit["missing_pages"], (0, 1))
+        with self.assertRaisesRegex(JobSafetyError, "identity changed"):
+            self.journal.checkpoint(job, 0, "ocr", artifact)
+
     def test_create_job_rejects_source_mutation_during_digest_without_journaling(self):
         original = self.original.read_bytes()
         real_hash = sha256_file

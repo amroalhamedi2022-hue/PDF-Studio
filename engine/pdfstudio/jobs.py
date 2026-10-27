@@ -185,6 +185,26 @@ class JobJournal:
             return None
         return f"{stat.st_dev}:{stat.st_ino}"
 
+    @staticmethod
+    def _checkpoint_artifact_matches(
+        path: str | Path,
+        expected_sha256: str,
+        expected_identity: str | None,
+    ) -> bool:
+        """Verify checkpoint bytes and recorded identity without trusting SQLite alone."""
+        try:
+            identity_before = JobJournal._artifact_identity(path)
+            if identity_before != expected_identity:
+                return False
+            digest = sha256_file(path)
+            identity_after = JobJournal._artifact_identity(path)
+        except OSError:
+            return False
+        return (
+            identity_before == identity_after == expected_identity
+            and digest == expected_sha256
+        )
+
     @contextmanager
     def _open(self) -> Iterator[sqlite3.Connection]:
         db = sqlite3.connect(self.database, timeout=30)
@@ -436,6 +456,14 @@ class JobJournal:
                 existing["artifact"] == str(file)
                 or (artifact_identity is not None and existing["artifact_identity"] == artifact_identity)
             )
+            if (
+                existing is not None
+                and existing["artifact"] == str(file)
+                and existing["artifact_identity"] != artifact_identity
+            ):
+                raise JobSafetyError(
+                    "checkpoint artifact identity changed; use a new path for changed bytes"
+                )
             if same_artifact and existing["artifact_sha256"] != digest:
                 raise JobSafetyError("checkpoint artifacts are immutable; use a new path for changed bytes")
             db.execute("""INSERT INTO checkpoints
@@ -468,8 +496,10 @@ class JobJournal:
             if job is None:
                 raise KeyError(job_id)
             rows = db.execute(
-                "SELECT page_index, artifact, artifact_sha256 FROM checkpoints "
-                "WHERE job_id=? AND stage=? ORDER BY page_index", (job_id, stage)
+                "SELECT c.page_index, c.artifact, c.artifact_sha256, i.artifact_identity "
+                "FROM checkpoints AS c LEFT JOIN checkpoint_artifact_identity AS i "
+                "ON i.job_id=c.job_id AND i.page_index=c.page_index AND i.stage=c.stage "
+                "WHERE c.job_id=? AND c.stage=? ORDER BY c.page_index", (job_id, stage)
             ).fetchall()
             state, page_count = job["state"], job["page_count"]
         valid, invalid = [], []
@@ -481,10 +511,9 @@ class JobJournal:
             if not isinstance(page_index, int) or not 0 <= page_index < page_count:
                 invalid.append(page_index)
                 continue
-            try:
-                matched = sha256_file(row["artifact"]) == row["artifact_sha256"]
-            except OSError:
-                matched = False
+            matched = self._checkpoint_artifact_matches(
+                row["artifact"], row["artifact_sha256"], row["artifact_identity"]
+            )
             (valid if matched else invalid).append(page_index)
         self.verify_source(job_id)  # reject source replacement during the audit
         verified = set(valid)
@@ -514,16 +543,17 @@ class JobJournal:
             raise ValueError("page index out of bounds")
         with self._open() as db:
             row = db.execute(
-                "SELECT artifact, artifact_sha256 FROM checkpoints "
-                "WHERE job_id=? AND page_index=? AND stage=?",
+                "SELECT c.artifact, c.artifact_sha256, i.artifact_identity "
+                "FROM checkpoints AS c LEFT JOIN checkpoint_artifact_identity AS i "
+                "ON i.job_id=c.job_id AND i.page_index=c.page_index AND i.stage=c.stage "
+                "WHERE c.job_id=? AND c.page_index=? AND c.stage=?",
                 (job_id, page_index, stage)
             ).fetchone()
         if row is None:
             return False
-        try:
-            return sha256_file(row["artifact"]) == row["artifact_sha256"]
-        except OSError:
-            return False
+        return self._checkpoint_artifact_matches(
+            row["artifact"], row["artifact_sha256"], row["artifact_identity"]
+        )
 
     def resumable_pages(self, job_id: str, stage: str) -> list[int]:
         """Return only pages with verified artifacts at this pipeline stage."""
@@ -532,7 +562,12 @@ class JobJournal:
         self.verify_source(job_id)
         page_count = self.get_job(job_id)["page_count"]
         with self._open() as db:
-            entries = db.execute("SELECT * FROM checkpoints WHERE job_id=? AND stage=? ORDER BY page_index", (job_id, stage)).fetchall()
+            entries = db.execute(
+                "SELECT c.page_index, c.artifact, c.artifact_sha256, i.artifact_identity "
+                "FROM checkpoints AS c LEFT JOIN checkpoint_artifact_identity AS i "
+                "ON i.job_id=c.job_id AND i.page_index=c.page_index AND i.stage=c.stage "
+                "WHERE c.job_id=? AND c.stage=? ORDER BY c.page_index", (job_id, stage)
+            ).fetchall()
         good = []
         for row in entries:
             page_index = row["page_index"]
@@ -540,9 +575,8 @@ class JobJournal:
             # invalid so they cannot inflate progress or suppress real work.
             if not isinstance(page_index, int) or not 0 <= page_index < page_count:
                 continue
-            try:
-                if sha256_file(row["artifact"]) == row["artifact_sha256"]:
-                    good.append(page_index)
-            except OSError:
-                continue
+            if self._checkpoint_artifact_matches(
+                row["artifact"], row["artifact_sha256"], row["artifact_identity"]
+            ):
+                good.append(page_index)
         return good
