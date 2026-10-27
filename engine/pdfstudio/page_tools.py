@@ -122,16 +122,36 @@ class _CappedWriter:
 def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
              digests: tuple[str, ...], max_output_bytes: int, *,
              expected_pages: int) -> None:
-    # The parent has already reserved this private staging file on the same
-    # filesystem as the destination. Reuse it instead of allocating a second
-    # full-size temporary copy.
+    # The worker receives a preallocated private staging file. Treat its path as
+    # untrusted across every open: reject symlinks/non-regular files, pin the
+    # inode while writing, and never unlink a different file during cleanup.
     if (not isinstance(expected_pages, int) or isinstance(expected_pages, bool)
             or expected_pages < 1):
         raise ValueError("expected_pages must be a positive integer")
-    created = False
+    expected_identity: tuple[int, int] | None = None
+    fd = -1
+    validation_fd = -1
     try:
-        with output.open("r+b") as fh:
-            created = True
+        try:
+            path_info = output.lstat()
+        except OSError as exc:
+            raise PageToolError("PDF staging file is missing") from exc
+        if not stat.S_ISREG(path_info.st_mode):
+            raise PageToolError("PDF staging path must be a regular file")
+        expected_identity = (path_info.st_dev, path_info.st_ino)
+
+        open_flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            fd = os.open(output, open_flags)
+        except OSError as exc:
+            raise PageToolError("PDF staging file could not be opened safely") from exc
+        opened_info = os.fstat(fd)
+        if (not stat.S_ISREG(opened_info.st_mode)
+                or (opened_info.st_dev, opened_info.st_ino) != expected_identity):
+            raise PageToolError("PDF staging identity changed before writing")
+
+        with os.fdopen(fd, "r+b") as fh:
+            fd = -1  # fdopen now owns the descriptor
             fh.seek(0)
             capped = _CappedWriter(fh, max_output_bytes)
             writer.write(capped)
@@ -140,12 +160,28 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
             fh.truncate(capped.length)
             fh.flush()
             os.fsync(fh.fileno())
+            written_info = os.fstat(fh.fileno())
+            if ((written_info.st_dev, written_info.st_ino) != expected_identity
+                    or written_info.st_size != capped.length):
+                raise PageToolError("PDF staging identity or size changed while writing")
 
-        # A header and nonzero byte count do not prove that the page tree is
-        # readable or that a transformation retained the requested pages.
-        # Reopen the staged result before publication and fail closed on either
-        # a parser error or an unexpected page count.
-        with output.open("rb") as validation_stream:
+        # A concurrent replacement must not be mistaken for the file we wrote.
+        current_info = output.lstat()
+        if (not stat.S_ISREG(current_info.st_mode)
+                or (current_info.st_dev, current_info.st_ino) != expected_identity):
+            raise PageToolError("PDF staging path changed after writing")
+
+        read_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            validation_fd = os.open(output, read_flags)
+        except OSError as exc:
+            raise PageToolError("PDF staging file could not be reopened safely") from exc
+        with os.fdopen(validation_fd, "rb") as validation_stream:
+            validation_fd = -1
+            validation_info = os.fstat(validation_stream.fileno())
+            if ((validation_info.st_dev, validation_info.st_ino) != expected_identity
+                    or not stat.S_ISREG(validation_info.st_mode)):
+                raise PageToolError("PDF staging identity changed during validation")
             if validation_stream.read(5) != b"%PDF-":
                 raise PageToolError("generated PDF has no valid PDF header")
             validation_stream.seek(0)
@@ -153,6 +189,16 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
                 actual_pages = len(PdfReader(validation_stream, strict=False).pages)
             except Exception as exc:
                 raise PageToolError("generated PDF failed structural validation") from exc
+            after_validation = os.fstat(validation_stream.fileno())
+            final_path_info = output.lstat()
+            if (not stat.S_ISREG(final_path_info.st_mode)
+                    or (final_path_info.st_dev, final_path_info.st_ino) != expected_identity
+                    or after_validation.st_size != validation_info.st_size
+                    or after_validation.st_mtime_ns != validation_info.st_mtime_ns
+                    or final_path_info.st_size != validation_info.st_size
+                    or final_path_info.st_mtime_ns != validation_info.st_mtime_ns):
+                raise PageToolError("generated PDF changed during structural validation")
+
         if actual_pages != expected_pages:
             raise PageToolError(
                 f"generated PDF page count mismatch: expected {expected_pages}, got {actual_pages}"
@@ -160,13 +206,23 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
         if any(sha256_file(src) != digest for src, digest in zip(sources, digests)):
             raise PageToolError("source changed during PDF operation")
     except BaseException:
-        if created:
+        # Delete only the staging inode observed at entry. If another actor
+        # replaces the pathname while writing/validation fails, preserve that
+        # unrelated file rather than deleting it as cleanup.
+        if expected_identity is not None:
             try:
-                output.unlink()
-            except FileNotFoundError:
+                current_info = output.lstat()
+                if (stat.S_ISREG(current_info.st_mode)
+                        and (current_info.st_dev, current_info.st_ino) == expected_identity):
+                    output.unlink()
+            except OSError:
                 pass
         raise
-
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if validation_fd >= 0:
+            os.close(validation_fd)
 
 def _normalize_crop_box(box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
     """Validate an absolute PDF user-space crop box (left, bottom, right, top)."""
