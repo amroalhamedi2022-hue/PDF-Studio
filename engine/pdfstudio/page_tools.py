@@ -20,7 +20,7 @@ from typing import Iterable
 from pypdf import PdfReader, PdfWriter
 
 from .page_ranges import PageRangeError, parse_page_ranges
-from .inspection import inspect_top_level_bookmark_starts
+from .inspection import DocumentInspectionError, inspect_top_level_bookmark_starts
 from .jobs import sha256_file
 
 
@@ -701,10 +701,13 @@ def split_pdf_by_bookmarks(source: str | Path, output_dir: str | Path, *,
     outline planning and page extraction. The existing 100-part, per-part and
     aggregate byte caps and no-clobber publication remain in force.
     """
-    page_count, bookmark_starts, source_digest = inspect_top_level_bookmark_starts(
-        source, max_pages=max_pages, max_bookmarks=100,
-        timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
-    )
+    try:
+        page_count, bookmark_starts, source_digest = inspect_top_level_bookmark_starts(
+            source, max_pages=max_pages, max_bookmarks=100,
+            timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+        )
+    except DocumentInspectionError as exc:
+        raise PageToolError("bookmark split could not safely inspect the PDF outline") from exc
     boundaries = list(bookmark_starts)
     if boundaries[0] > 0:
         boundaries.insert(0, 0)
