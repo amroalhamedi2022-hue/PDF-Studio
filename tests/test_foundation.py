@@ -47,7 +47,8 @@ class JournalTests(unittest.TestCase):
     def test_legacy_journal_migrates_output_reservation_key(self):
         legacy_db = self.root / "legacy-jobs.sqlite"
         output = self.root / "legacy-output.pdf"
-        with sqlite3.connect(legacy_db) as db:
+        db = sqlite3.connect(legacy_db)
+        try:
             db.execute("""CREATE TABLE jobs (
                 job_id TEXT PRIMARY KEY,
                 source TEXT NOT NULL,
@@ -61,6 +62,9 @@ class JournalTests(unittest.TestCase):
                 ("legacy-job", str(self.original.resolve()), sha256_file(self.original),
                  str(output.resolve()), 1, "pending"),
             )
+            db.commit()
+        finally:
+            db.close()
         migrated = type(self.journal)(legacy_db)
         with migrated._open() as db:
             row = db.execute(

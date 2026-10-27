@@ -101,6 +101,9 @@ class JobJournal:
                     token TEXT
                 );
             """)
+            # Serialize the schema check/backfill so two app processes opening an
+            # older journal cannot both attempt the same ALTER TABLE migration.
+            db.execute("BEGIN IMMEDIATE")
             # Older B00/B01 journals do not have output_key. Backfill it without
             # rewriting the user-visible output path; the index makes subsequent
             # alias checks cheap while keeping legacy duplicate rows readable.
