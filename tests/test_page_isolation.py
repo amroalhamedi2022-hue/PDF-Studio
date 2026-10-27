@@ -174,6 +174,29 @@ class IsolatedPageToolTests(unittest.TestCase):
         self.assertFalse(self.out.exists())
         self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
+    def test_staging_reservation_failure_preserves_concurrent_path_replacement(self):
+        staged = self.root / "reserved-race.bin"
+        moved = self.root / "reserved-original.bin"
+        sentinel = b"owned by concurrent creator"
+        patch_target = ("pdfstudio.page_isolation.os.posix_fallocate"
+                        if os.name == "posix" else "pdfstudio.page_isolation.os.ftruncate")
+
+        def replace_path_then_fail(*_args):
+            # The reservation descriptor still references the original inode,
+            # while the path now names a different file.
+            staged.rename(moved)
+            staged.write_bytes(sentinel)
+            raise OSError(errno.ENOSPC, "simulated disk full after path replacement")
+
+        with mock.patch(patch_target, side_effect=replace_path_then_fail):
+            with self.assertRaisesRegex(PageToolError, "could not reserve estimated"):
+                _reserve_staging_file(staged, 1024 * 1024)
+
+        self.assertEqual(staged.read_bytes(), sentinel)
+        self.assertTrue(moved.is_file())
+        self.assertNotEqual((staged.stat().st_dev, staged.stat().st_ino),
+                            (moved.stat().st_dev, moved.stat().st_ino))
+
     def test_existing_output_never_replaced(self):
         self.out.write_bytes(b"private-output")
         with self.assertRaises(FileExistsError):
