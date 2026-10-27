@@ -698,3 +698,16 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 **Status:** B01 remains OPEN / PARTIAL. Real Arabic/English OCR, realistic >=2 GiB scanned documents, OS-reboot recovery, hostile-PDF sandboxing, Android SAF/UI, Windows GUI/EXE and device acceptance remain NOT TESTED. No APK/EXE build was warranted for this Python/SQLite journal-contract change; source CI directly exercised the relevant behavior on both operating systems.
 
 **Google Drive Handoff:** FAILED / NOT AVAILABLE in this runtime because no Google Docs/Drive write connector is exposed. The specified PDF Studio Handoff was not updated; this failure is recorded here rather than claiming sync success. No user documents or secrets were added to the public repository.
+
+
+## 2026-10-27 — Atomic reservation of final output paths (same B01 milestone)
+
+- **Milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity` remains **OPEN / PARTIAL**. No B02 work started.
+- **Risk:** `create_job()` checked whether the output file existed before hashing the source, but did not reserve that destination in SQLite. Two simultaneous creators could both pass the filesystem check and journal different jobs targeting the same not-yet-created final path.
+- **Production fix:** the final insert now runs under `BEGIN IMMEDIATE`, rechecks that the destination has not appeared, and rejects any output path already reserved by a journaled job. This serializes `JobJournal.create_job()` reservations; the final output publisher must still retain its independent atomic no-clobber check.
+- **Regression:** a barrier-synchronized two-thread test creates jobs against one shared destination. Exactly one creator succeeds, the other receives `FileExistsError`, and SQLite contains exactly one reservation for that path.
+- **Code + test commit:** [`3c9db016f72d4b908ac277231d2e19c8f9932593`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/3c9db016f72d4b908ac277231d2e19c8f9932593).
+- **Exact CI:** PR [#40529062317](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40529062317) and push [#40529054693](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40529054693) **PASS** on Ubuntu + Windows: 169 tests per host (Ubuntu skips four Windows-only tests). The concurrent reservation regression passed on both. 100-page, 64 MiB disk-backed extraction and Linux 1000/5000-page checkpoint/crash/resume/FTS benchmarks also passed.
+- **Limits:** the 5000-page fixture is a 2.64 MB born-digital synthetic PDF, not OCR, a realistic >=2 GiB scan, reboot recovery or hostile-input sandbox testing. Android SAF/UI, Windows GUI/EXE and physical-device acceptance remain **NOT TESTED**.
+- **Build decision:** no APK/EXE build; this Python/SQLite transaction contract is directly exercised on both host OSes, and application packaging would not provide stronger evidence for this change.
+- **Google Drive Handoff:** **FAILED / NOT AVAILABLE**; this runtime has no Google Docs/Drive write connector. The named PDF Studio Handoff was not modified. No user documents or secrets were added to the public repository.

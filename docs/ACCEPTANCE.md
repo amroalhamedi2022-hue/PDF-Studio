@@ -74,3 +74,12 @@ Every Fxx.yy must have at least one reproducible automated check or honest manua
 - Synthetic 5000-page process-crash/resume and FTS integrity passed on Linux; this is a 2.64 MB born-digital fixture, **not** a realistic >=2 GiB/scanned or OCR test. 64 MiB disk-backed extraction passed on both OSes with source SHA unchanged and no staging leftovers.
 - Still NOT TESTED: OS reboot recovery, real OCR, realistic >=2 GiB scanned files, hostile-input sandboxing, Android/Windows GUI and device acceptance. Keep B01 OPEN and do not open B02.
 - Google Drive `PDF Studio — HANDOFF` synchronization remains FAILED / NOT AVAILABLE because no Drive/Docs write connector is exposed in this runtime; no successful update is claimed.
+
+
+## 2026-10-27 checkpoint addendum — Atomic output-path reservation (B01)
+
+- **F04.03 remains IN PROGRESS, not accepted.** `JobJournal.create_job()` now serializes output reservation with SQLite `BEGIN IMMEDIATE`, rechecks filesystem existence inside the transaction, and rejects a path already reserved by another journaled job. Code + concurrent regression test: [`3c9db016f72d4b908ac277231d2e19c8f9932593`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/3c9db016f72d4b908ac277231d2e19c8f9932593).
+- Exact CI: [PR #40529062317 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40529062317) and [push #40529054693 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40529054693), Ubuntu + Windows, 169 tests per host (four Windows-only skips on Ubuntu). Two synchronized creators contending for one absent output yielded exactly one reservation.
+- Existing synthetic 100/1000/5000-page, 64 MiB extraction, checkpoint interruption/resume and FTS checks passed. Synthetic 5000-page input is 2.64 MB born-digital data, not OCR or realistic >=2 GiB scan evidence.
+- Still **NOT TESTED**: real Arabic/English OCR, realistic >=2 GiB scans, OS-reboot recovery, hostile-PDF sandbox, Android SAF/UI, Windows GUI/EXE and physical-device acceptance. Keep B01 OPEN; do not open B02.
+- No APK/EXE build was useful for this Python/SQLite transaction fix. Google Drive `PDF Studio — HANDOFF` sync remains **FAILED / NOT AVAILABLE** because no Docs/Drive write connector is exposed; no sync success is claimed.
