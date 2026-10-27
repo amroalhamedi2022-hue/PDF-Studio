@@ -66,3 +66,11 @@ Statuses: TODO, IN PROGRESS, PASS, FAIL, BLOCKED, NOT TESTED. A PASS requires te
 ## Test coverage contract
 
 Every Fxx.yy must have at least one reproducible automated check or honest manual acceptance protocol with real evidence. NOT TESTED cannot be converted to PASS on code presence alone.
+
+
+## 2026-10-27 checkpoint addendum — SQLite page-index bounds
+
+- **F04.03 remains IN PROGRESS, not accepted.** The journal writer already rejects invalid indices; defensive recovery now also rejects malformed SQLite rows with `page_index >= page_count`. Production SHA [`d5af56ebc3c9a38eafff694e90c747f12148746e`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/d5af56ebc3c9a38eafff694e90c747f12148746e), regression test SHA [`cde91cb1c485dbbbf713820f245b6c99d5e9dbfe`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/cde91cb1c485dbbbf713820f245b6c99d5e9dbfe), exact CI [#40520639306](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40520639306) PASS on Ubuntu + Windows, 168 tests each.
+- Synthetic 5000-page process-crash/resume and FTS integrity passed on Linux; this is a 2.64 MB born-digital fixture, **not** a realistic >=2 GiB/scanned or OCR test. 64 MiB disk-backed extraction passed on both OSes with source SHA unchanged and no staging leftovers.
+- Still NOT TESTED: OS reboot recovery, real OCR, realistic >=2 GiB scanned files, hostile-input sandboxing, Android/Windows GUI and device acceptance. Keep B01 OPEN and do not open B02.
+- Google Drive `PDF Studio — HANDOFF` synchronization remains FAILED / NOT AVAILABLE because no Drive/Docs write connector is exposed in this runtime; no successful update is claimed.

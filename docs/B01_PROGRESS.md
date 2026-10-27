@@ -683,3 +683,18 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Google Drive `PDF Studio — HANDOFF` sync: FAILED / NOT AVAILABLE.** No Google Docs/Drive write connector is exposed in this runtime; the specified Drive document was not updated and no sync success is claimed.
 - **Next:** continue B01 output-integrity and resource gates before opening B02. PR #2 remains draft/open; no merge, auto-merge or `main` changes.
 
+
+
+## 2026-10-27 — Reject out-of-range SQLite checkpoints (same B01 milestone)
+
+**Risk found:** the normal checkpoint writer enforces `0 <= page_index < page_count`, but SQLite's table constraint only enforces non-negative indices. A malformed or manually edited journal row beyond the job's page count could be reported as a valid recovery page and appear in `resumable_pages()`.
+
+**Production fix:** `JobJournal.recovery_snapshot()` now marks out-of-range rows invalid; `resumable_pages()` never returns them; `verified_checkpoint()` rejects an index at or beyond the immutable job page count. This is defensive journal validation, not automatic recovery authorization. Production commit: [`d5af56ebc3c9a38eafff694e90c747f12148746e`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/d5af56ebc3c9a38eafff694e90c747f12148746e).
+
+**Regression test:** inserted a synthetic out-of-range row directly into SQLite to bypass the public API; recovery reports it as invalid, still reports the real missing pages, resume candidates exclude it, and single-page verification rejects it. Test commit: [`cde91cb1c485dbbbf713820f245b6c99d5e9dbfe`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/cde91cb1c485dbbbf713820f245b6c99d5e9dbfe).
+
+**Exact CI:** [run #40520639306](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40520639306) **PASS** on Ubuntu and Windows, 168 tests per OS. Linux also passed the synthetic 1000-page check and 5000-page abrupt-process interruption/resume/FTS check: 2,500 durable pages were reused and only 2,500 remaining pages reprocessed; source SHA and FTS integrity stayed valid. Both hosts passed the 64 MiB disk-backed extraction with unchanged source SHA and zero staging leftovers. The 5000-page PDF is 2.64 MB born-digital synthetic data, not OCR or a realistic >=2 GiB scan.
+
+**Status:** B01 remains OPEN / PARTIAL. Real Arabic/English OCR, realistic >=2 GiB scanned documents, OS-reboot recovery, hostile-PDF sandboxing, Android SAF/UI, Windows GUI/EXE and device acceptance remain NOT TESTED. No APK/EXE build was warranted for this Python/SQLite journal-contract change; source CI directly exercised the relevant behavior on both operating systems.
+
+**Google Drive Handoff:** FAILED / NOT AVAILABLE in this runtime because no Google Docs/Drive write connector is exposed. The specified PDF Studio Handoff was not updated; this failure is recorded here rather than claiming sync success. No user documents or secrets were added to the public repository.
