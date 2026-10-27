@@ -100,6 +100,15 @@ class JobJournal:
                     generation INTEGER NOT NULL CHECK(generation >= 1),
                     token TEXT
                 );
+                CREATE TABLE IF NOT EXISTS checkpoint_artifact_identity (
+                    job_id TEXT NOT NULL,
+                    page_index INTEGER NOT NULL,
+                    stage TEXT NOT NULL,
+                    artifact_identity TEXT,
+                    PRIMARY KEY (job_id, page_index, stage),
+                    FOREIGN KEY (job_id, page_index, stage)
+                        REFERENCES checkpoints(job_id, page_index, stage) ON DELETE CASCADE
+                );
             """)
             # Serialize the schema check/backfill so two app processes opening an
             # older journal cannot both attempt the same ALTER TABLE migration.
@@ -119,6 +128,31 @@ class JobJournal:
                     (self._destination_key(row["output"]), row["job_id"]),
                 )
             db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_output_key ON jobs(output_key)")
+            db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_checkpoint_artifact_identity "
+                "ON checkpoint_artifact_identity(artifact_identity)"
+            )
+            # Older journals have checkpoint rows but no file-identity map.
+            # Backfill existing artifacts without deleting or rewriting checkpoints.
+            # Missing files remain represented with a NULL identity and are still
+            # rejected by the normal SHA verification when a resume is attempted.
+            legacy_artifacts = db.execute("""
+                SELECT c.job_id, c.page_index, c.stage, c.artifact
+                FROM checkpoints AS c
+                LEFT JOIN checkpoint_artifact_identity AS i
+                  ON i.job_id=c.job_id AND i.page_index=c.page_index AND i.stage=c.stage
+                WHERE i.job_id IS NULL
+            """).fetchall()
+            for row in legacy_artifacts:
+                try:
+                    identity = self._artifact_identity(row["artifact"])
+                except OSError:
+                    identity = None
+                db.execute(
+                    "INSERT OR IGNORE INTO checkpoint_artifact_identity "
+                    "(job_id, page_index, stage, artifact_identity) VALUES (?,?,?,?)",
+                    (row["job_id"], row["page_index"], row["stage"], identity),
+                )
 
     @staticmethod
     def _destination_key(path: str | Path) -> str:
@@ -138,6 +172,18 @@ class JobJournal:
             tail = os.path.normpath(os.sep.join(components))
             value = drive + tail
         return os.path.normcase(os.path.normpath(value))
+
+    @staticmethod
+    def _artifact_identity(path: str | Path) -> str | None:
+        """Stable device/inode identity for detecting hard-link aliases.
+
+        Some filesystems do not expose a useful inode number. In that case the
+        journal still enforces its existing resolved-path uniqueness check.
+        """
+        stat = Path(path).stat()
+        if not stat.st_ino:
+            return None
+        return f"{stat.st_dev}:{stat.st_ino}"
 
     @contextmanager
     def _open(self) -> Iterator[sqlite3.Connection]:
@@ -343,6 +389,7 @@ class JobJournal:
         if file == self.database.resolve():
             raise JobSafetyError("journal database cannot be a checkpoint artifact")
         digest = sha256_file(file)
+        artifact_identity = self._artifact_identity(file)
         with self._open() as db:
             db.execute("BEGIN IMMEDIATE")
             current = db.execute("SELECT state FROM jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -361,24 +408,49 @@ class JobJournal:
             # A checkpoint is an immutable page/stage artifact, not a shared
             # scratch filename. Reusing one path for another key (or job) lets
             # a later page overwrite bytes already trusted by an earlier one.
+            if self._artifact_identity(file) != artifact_identity:
+                raise JobSafetyError("checkpoint artifact identity changed during verification")
             reused = db.execute(
-                "SELECT job_id, page_index, stage FROM checkpoints WHERE artifact=? "
-                "AND NOT (job_id=? AND page_index=? AND stage=?) LIMIT 1",
-                (str(file), job_id, page_index, stage),
+                """SELECT c.job_id, c.page_index, c.stage
+                FROM checkpoints AS c
+                LEFT JOIN checkpoint_artifact_identity AS i
+                  ON i.job_id=c.job_id AND i.page_index=c.page_index AND i.stage=c.stage
+                WHERE (c.artifact=? OR (? IS NOT NULL AND i.artifact_identity=?))
+                  AND NOT (c.job_id=? AND c.page_index=? AND c.stage=?)
+                LIMIT 1""",
+                (str(file), artifact_identity, artifact_identity, job_id, page_index, stage),
             ).fetchone()
             if reused is not None:
-                raise JobSafetyError("checkpoint artifact path is already assigned to another page or job")
+                raise JobSafetyError(
+                    "checkpoint artifact path or file identity is already assigned to another page or job"
+                )
             existing = db.execute(
-                "SELECT artifact, artifact_sha256 FROM checkpoints "
-                "WHERE job_id=? AND page_index=? AND stage=?",
+                """SELECT c.artifact, c.artifact_sha256, i.artifact_identity
+                FROM checkpoints AS c
+                LEFT JOIN checkpoint_artifact_identity AS i
+                  ON i.job_id=c.job_id AND i.page_index=c.page_index AND i.stage=c.stage
+                WHERE c.job_id=? AND c.page_index=? AND c.stage=?""",
                 (job_id, page_index, stage),
             ).fetchone()
-            if existing is not None and existing["artifact"] == str(file) and existing["artifact_sha256"] != digest:
+            same_artifact = existing is not None and (
+                existing["artifact"] == str(file)
+                or (artifact_identity is not None and existing["artifact_identity"] == artifact_identity)
+            )
+            if same_artifact and existing["artifact_sha256"] != digest:
                 raise JobSafetyError("checkpoint artifacts are immutable; use a new path for changed bytes")
-            db.execute("""INSERT INTO checkpoints VALUES (?,?,?,?,?)
+            db.execute("""INSERT INTO checkpoints
+                (job_id, page_index, stage, artifact, artifact_sha256)
+                VALUES (?,?,?,?,?)
                 ON CONFLICT(job_id,page_index,stage) DO UPDATE SET
                 artifact=excluded.artifact, artifact_sha256=excluded.artifact_sha256""",
                 (job_id, page_index, stage, str(file), digest))
+            db.execute(
+                """INSERT INTO checkpoint_artifact_identity
+                (job_id, page_index, stage, artifact_identity) VALUES (?,?,?,?)
+                ON CONFLICT(job_id,page_index,stage) DO UPDATE SET
+                artifact_identity=excluded.artifact_identity""",
+                (job_id, page_index, stage, artifact_identity),
+            )
 
 
     def recovery_snapshot(self, job_id: str, stage: str) -> dict:
