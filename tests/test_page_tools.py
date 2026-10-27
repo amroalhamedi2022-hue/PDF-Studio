@@ -351,7 +351,7 @@ class PageToolsTests(unittest.TestCase):
 
         class ReplacingWriter:
             def write(self, stream):
-                original_path = Path(stream.name)
+                original_path = staging
                 # Close the open descriptor first so the same deterministic
                 # race fixture also works on Windows filesystems.
                 stream._stream.close()
