@@ -14,7 +14,7 @@ Not yet implemented: advanced split/reorder UI, complete signature validation, l
 
 ## Tests
 - Host synthetic suite: B00 8 + B01 12 = 20 PASS (Python with local pypdf 5.9.0). Pinned 6.21.2 GitHub CI evidence pending.
-- No APK/EXE building, no OCR or user content processed.
+- No APK/EXE was built in this initial source-only checkpoint; build decisions follow the updated 2026-10-24 purpose-driven policy and require a concrete runtime/device/integration question. No OCR or user content was processed.
 
 ## Next implementation
 Implement page ranges, metadata browser, safe file IO, and parser-isolation limits; build valid corpus and benchmark; proceed to viewer adapter after ADR decision.
@@ -607,4 +607,30 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **B01 status:** **OPEN / IN PROGRESS**. Split-by-target-size, more efficient multi-part splitting, text-layer fidelity, realistic large/scanned corpus, Arabic/English OCR, reboot recovery, Android/Windows GUI and device acceptance remain unaccepted or NOT TESTED.
 - **Build decision:** no APK/EXE build; this is a Python filesystem-race contract directly covered by source tests. Packaging would not answer the test question.
 - **Google Drive `PDF Studio — HANDOFF` sync:** **FAILED / NOT AVAILABLE**. No Google Docs/Drive write connector is exposed in this runtime; the Drive document was not changed and no sync success is claimed.
+
+## 2026-10-27 — target-byte PDF splitting (source CI PASS; B01 remains OPEN)
+
+**Active milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity`.
+
+### Production implementation
+- Added `split_pdf_by_size()` in `engine/pdfstudio/page_tools.py`. It obtains the page count and source SHA through the existing isolated inspection worker, then finds ordered page-group boundaries using bounded binary-search extraction probes.
+- Each candidate is written by the existing resource-limited page worker and checked against the target part-byte ceiling. The aggregate byte cap is accounted for while planning; a single page that cannot fit fails closed instead of being dropped.
+- The final parts are produced by the existing staged multi-part publisher, which pins the planned source SHA, preflights output names, validates every PDF/page count, publishes without clobbering and rolls back only outputs still matching this operation.
+- Probe cleanup checks the candidate's regular-file device/inode identity before unlinking. No new dependency was added.
+- The splitter is bounded by the configured page cap and existing 100-part limit, but it re-serializes candidate ranges; **single-pass optimization remains open**.
+
+### Regression and CI evidence
+- Added tests for per-part byte caps, ordered complete page coverage, unchanged source SHA, no leftover staging directories, too-small single-page caps (no final output), invalid cap values and no-clobber behavior.
+- Production change: [`a9f4e20b239a6ee7c0ebf0eee30fd48abffe2858`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/a9f4e20b239a6ee7c0ebf0eee30fd48abffe2858); regression tests are included in its branch ancestry at [`b81173aa5a22cc128acbd330a9ccc798338545bf`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/b81173aa5a22cc128acbd330a9ccc798338545bf).
+- Exact code/test CI [#40466156497](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40466156497): **PASS** on Ubuntu + Windows, 163 tests per host; Ubuntu skipped four Windows-only tests. Syntax checks PASS.
+- 100-page native-text smoke and 64 MiB disk-backed synthetic extraction: **PASS** on both hosts; source SHA unchanged and no staging leftovers.
+- Linux 1,000/5,000-page synthetic index/checkpoint-resume/FTS checks: **PASS**. The 5,000-page fixture is 2.64 MB of born-digital synthetic text; it is not OCR, a scanned corpus or a realistic >=2 GiB document.
+- No APK/EXE build: this round's question was whether byte-bounded page splitting preserves complete ordered pages and fails closed under caps; source/integration tests directly exercise it. Packaging would not answer that question.
+
+### B01 acceptance and remaining gates
+- **PASS:** source-level split-by-size cap/order/source-preservation tests on Ubuntu and Windows; existing page operation suite; synthetic cross-platform scale/disk-backed checks and Linux checkpoint/resume/FTS.
+- **IN PROGRESS:** efficient single-pass/multi-part splitting, comprehensive output text-layer and page-order verification across operation types, genuine disk-pressure contention, and interrupted multi-output publication.
+- **NOT TESTED:** realistic scanned/large PDFs including >=2 GiB where resources permit, Arabic/English OCR, crash/reboot acceptance, Android SAF/native UI, Windows GUI/EXE, visual fidelity and Xiaomi Pad 5 behavior. Synthetic born-digital fixtures do not satisfy these gates.
+- **Google Drive `PDF Studio — HANDOFF` sync: FAILED / NOT AVAILABLE.** No Google Docs/Drive write connector is exposed in this runtime; the specified document was not updated and no sync success is claimed.
+- **Next:** keep B01 OPEN and finish the remaining B01 resource/output-integrity gates before opening B02. PR #2 stays draft/open; do not merge or modify `main`.
 
