@@ -352,6 +352,9 @@ class PageToolsTests(unittest.TestCase):
         class ReplacingWriter:
             def write(self, stream):
                 original_path = Path(stream.name)
+                # Close the open descriptor first so the same deterministic
+                # race fixture also works on Windows filesystems.
+                stream._stream.close()
                 original_path.rename(moved)
                 original_path.write_bytes(b"concurrent replacement")
                 raise RuntimeError("injected write failure")
