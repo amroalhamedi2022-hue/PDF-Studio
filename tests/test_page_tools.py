@@ -347,13 +347,17 @@ class PageToolsTests(unittest.TestCase):
 
     def test_split_pdf_by_size_respects_cap_order_and_source_integrity(self):
         source = self.root / "size-source.pdf"
-        self.write_file(source, [300, 300, 300, 300, 300, 300])
+        widths = [300, 310, 320, 330, 340, 350]
+        self.write_file(source, widths)
         before = source.read_bytes()
         probe_dir = self.root / "single-page-probes"
         probe_dir.mkdir()
-        extract_pages(source, probe_dir / "single.pdf", [0])
-        one_page_bytes = (probe_dir / "single.pdf").stat().st_size
-        target_bytes = one_page_bytes + 16
+        single_page_sizes = []
+        for index in range(len(widths)):
+            candidate = probe_dir / f"single-{index + 1}.pdf"
+            extract_pages(source, candidate, [index])
+            single_page_sizes.append(candidate.stat().st_size)
+        target_bytes = max(single_page_sizes) + 16
         out_dir = self.root / "size-parts"
         out_dir.mkdir()
 
@@ -369,10 +373,36 @@ class PageToolsTests(unittest.TestCase):
             self.assertLessEqual(output.stat().st_size, target_bytes)
             with output.open("rb") as stream:
                 actual_widths.extend(float(page.mediabox.width) for page in PdfReader(stream).pages)
-        self.assertEqual(actual_widths, [300.0] * 6)
+        self.assertEqual(actual_widths, [float(width) for width in widths])
         self.assertEqual(list(out_dir.glob(".pdfstudio-size-probe-*")), [])
         self.assertEqual(list(out_dir.glob(".pdfstudio-split-*")), [])
         self.assertEqual(list(out_dir.glob(".pdfstudio-stage-*")), [])
+
+    def test_split_pdf_by_size_aggregate_cap_fails_without_publishing_any_part(self):
+        source = self.root / "aggregate-size-source.pdf"
+        widths = [300, 310, 320, 330, 340, 350]
+        self.write_file(source, widths)
+        before = source.read_bytes()
+        probe_dir = self.root / "aggregate-single-probes"
+        probe_dir.mkdir()
+        single_page_sizes = []
+        for index in range(len(widths)):
+            candidate = probe_dir / f"single-{index + 1}.pdf"
+            extract_pages(source, candidate, [index])
+            single_page_sizes.append(candidate.stat().st_size)
+        target_bytes = max(single_page_sizes) + 16
+        out_dir = self.root / "aggregate-size-parts"
+        out_dir.mkdir()
+
+        with self.assertRaises(PageToolError):
+            split_pdf_by_size(
+                source, out_dir, max_part_bytes=target_bytes,
+                max_total_output_bytes=target_bytes, base_name="aggregate",
+                free_space_margin_bytes=0,
+            )
+
+        self.assertEqual(source.read_bytes(), before)
+        self.assertEqual(list(out_dir.iterdir()), [])
 
     def test_split_pdf_by_size_rejects_single_page_over_cap_without_outputs(self):
         out_dir = self.root / "too-small-size-parts"
