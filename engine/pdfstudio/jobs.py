@@ -345,11 +345,18 @@ class JobJournal:
             state, page_count = job["state"], job["page_count"]
         valid, invalid = [], []
         for row in rows:
+            page_index = row["page_index"]
+            # The public checkpoint API enforces this bound, but a damaged or
+            # manually edited SQLite journal can bypass that API. Never report
+            # an out-of-document artifact as a valid page during recovery.
+            if not isinstance(page_index, int) or not 0 <= page_index < page_count:
+                invalid.append(page_index)
+                continue
             try:
                 matched = sha256_file(row["artifact"]) == row["artifact_sha256"]
             except OSError:
                 matched = False
-            (valid if matched else invalid).append(row["page_index"])
+            (valid if matched else invalid).append(page_index)
         self.verify_source(job_id)  # reject source replacement during the audit
         verified = set(valid)
         return {
@@ -373,6 +380,9 @@ class JobJournal:
             raise ValueError("unsupported stage")
         if not isinstance(page_index, int) or isinstance(page_index, bool) or page_index < 0:
             raise ValueError("invalid page index")
+        job = self.get_job(job_id)
+        if page_index >= job["page_count"]:
+            raise ValueError("page index out of bounds")
         with self._open() as db:
             row = db.execute(
                 "SELECT artifact, artifact_sha256 FROM checkpoints "
@@ -391,13 +401,19 @@ class JobJournal:
         if stage not in STAGES:
             raise ValueError("unsupported stage")
         self.verify_source(job_id)
+        page_count = self.get_job(job_id)["page_count"]
         with self._open() as db:
             entries = db.execute("SELECT * FROM checkpoints WHERE job_id=? AND stage=? ORDER BY page_index", (job_id, stage)).fetchall()
         good = []
         for row in entries:
+            page_index = row["page_index"]
+            # Ignore malformed journal rows; recovery_snapshot reports them as
+            # invalid so they cannot inflate progress or suppress real work.
+            if not isinstance(page_index, int) or not 0 <= page_index < page_count:
+                continue
             try:
                 if sha256_file(row["artifact"]) == row["artifact_sha256"]:
-                    good.append(row["page_index"])
+                    good.append(page_index)
             except OSError:
                 continue
         return good
