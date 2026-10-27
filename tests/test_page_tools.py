@@ -344,6 +344,30 @@ class PageToolsTests(unittest.TestCase):
         self.assertFalse((out_dir / "report-part-002.pdf").exists())
 
 
+    def test_publish_preserves_replacement_path_when_writer_fails(self):
+        staging = self.root / "raced-staging.pdf"
+        moved = self.root / "moved-original-staging.pdf"
+        staging.write_bytes(b"reserved")
+
+        class ReplacingWriter:
+            def write(self, stream):
+                original_path = Path(stream.name)
+                original_path.rename(moved)
+                original_path.write_bytes(b"concurrent replacement")
+                raise RuntimeError("injected write failure")
+
+        with self.assertRaisesRegex(RuntimeError, "injected write failure"):
+            _publish(
+                ReplacingWriter(), staging, (self.a,), (sha256_file(self.a),),
+                1024 * 1024, expected_pages=1,
+            )
+
+        # Cleanup must not unlink a different inode that appeared at the same
+        # path after the writer started. The moved original is also left alone.
+        self.assertEqual(staging.read_bytes(), b"concurrent replacement")
+        self.assertEqual(moved.read_bytes(), b"reserved")
+        self.assertEqual(len(PdfReader(self.a).pages), 3)
+
     def test_publish_rejects_page_count_mismatch_and_removes_staging(self):
         staging = self.root / "reserved-count.pdf"
         staging.write_bytes(b"reserved")
