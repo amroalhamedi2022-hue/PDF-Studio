@@ -145,6 +145,19 @@ class JobJournal:
             raise SourceChangedError("original PDF changed while creating job")
         job_id = str(uuid.uuid4())
         with self._open() as db:
+            # Serialize destination reservation with SQLite's writer lock.
+            # The earlier filesystem check is only a fast path; two creators
+            # can both pass it while the destination is still absent.
+            db.execute("BEGIN IMMEDIATE")
+            if dst.exists():
+                raise FileExistsError(f"output already exists: {dst}")
+            reserved = db.execute(
+                "SELECT 1 FROM jobs WHERE output=? LIMIT 1", (str(dst),)
+            ).fetchone()
+            if reserved is not None:
+                raise FileExistsError(
+                    "output path is already reserved by a journaled job"
+                )
             db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?)", (job_id, str(src), digest, str(dst), page_count, "pending"))
         return job_id
 

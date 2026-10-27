@@ -1,5 +1,7 @@
 """Stage-runner recovery tests using synthetic artifacts, not real OCR."""
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -25,6 +27,30 @@ class StageRunnerTests(unittest.TestCase):
         path = self.root / ("page_%d_%d.txt" % (page, len(self.calls)))
         path.write_text("page=%d" % page, encoding="utf-8")
         return path
+
+    def test_create_job_reserves_shared_output_atomically(self):
+        shared_output = self.root / "shared-final.pdf"
+        start = threading.Barrier(2)
+
+        def create_same_destination():
+            start.wait(timeout=10)
+            try:
+                return ("created", self.journal.create_job(
+                    self.source, shared_output, 3))
+            except FileExistsError:
+                return ("reserved", None)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(lambda _: create_same_destination(), range(2)))
+
+        self.assertCountEqual(
+            [status for status, _ in outcomes], ["created", "reserved"])
+        with self.journal._open() as db:
+            rows = db.execute(
+                "SELECT job_id FROM jobs WHERE output=?",
+                (str(shared_output.resolve()),),
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
 
     def test_first_run_then_verified_resume(self):
         result = run_page_stage(self.journal, self.job, "ocr", self.produce)
