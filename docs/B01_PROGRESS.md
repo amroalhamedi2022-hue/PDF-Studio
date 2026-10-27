@@ -725,3 +725,17 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Build decision:** no APK/EXE build. This change is a Python/SQLite path-reservation and schema-migration contract, directly covered by source tests on both target hosts; packaging would not answer a stronger runtime question.
 - **Google Drive Handoff:** `PDF Studio — HANDOFF` remains **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The specified Drive document was not updated; no successful sync is claimed.
 - No paid tools/runners, user documents, secrets, merge, auto-merge, or `main` changes.
+
+
+## 2026-10-27 follow-up — Win32 trailing-dot/space output aliases
+
+- **Milestone:** \`B01 — Resource-Bounded PDF Core & Output Integrity\` remains **OPEN / PARTIAL**; B02 stays closed.
+- **Risk addressed:** ordinary Win32 file APIs treat trailing dots/spaces in path components as aliases in common path namespaces. Distinct strings can therefore refer to one destination even after case-folding. Reference: Microsoft Learn, [Naming Files, Paths, and Namespaces](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file).
+- **Production + regression commit:** [\`45ca1ea3f2cc8c6b9b7941deb8fc6346f47de68c\`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/45ca1ea3f2cc8c6b9b7941deb8fc6346f47de68c). The Windows destination key now strips trailing dots/spaces from ordinary path components before indexed reservation comparison; extended/device namespace prefixes retain separate semantics. User-visible \`jobs.output\` is unchanged.
+- **Regression:** reserve \`Trailing-Alias.pdf\`, then verify both \`Trailing-Alias.pdf.\` and \`Trailing-Alias.pdf \` fail with \`FileExistsError\` rather than creating a second SQLite reservation. This test runs on Windows, where the relevant Win32 semantics apply.
+- **Exact CI:** [source-only run #40558639455](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40558639455) **PASS** on Ubuntu + Windows; 172 tests per host. Ubuntu skipped six Windows/platform-specific cases; Windows executed the new trailing-dot/space regression and passed it.
+- **Measured scale evidence from the same run:** synthetic 100-page smoke and 64 MiB disk-backed extraction PASS on both hosts; Linux 1000-page and 5000-page abrupt-process checkpoint/resume/FTS PASS. The 5000-page born-digital fixture is 2.64 MB; interruption after 2,500 checkpoints resumed only the remaining 2,500 and later reused all 5,000. Linux parent/max-child peak RSS was 52.89/54.00 MiB (separate high-water marks, not summed). This is not OCR or realistic >=2 GiB scan evidence.
+- **Build decision:** no APK/EXE build; this is a Python/SQLite path-key contract, directly tested on both target host OSes.
+- **Still NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scanned PDFs, OS-reboot recovery, hostile-input sandbox, Android SAF/UI/device, Windows GUI/EXE/device and full F01–F10.
+- **Google Drive Handoff:** **FAILED / NOT AVAILABLE** because this runtime has no Google Docs/Drive write connector. The specified \`PDF Studio — HANDOFF\` was not updated; no sync success is claimed.
+- No paid tools/runners, user documents, secrets, merge, auto-merge or \`main\` changes.

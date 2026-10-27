@@ -97,3 +97,13 @@ Every Fxx.yy must have at least one reproducible automated check or honest manua
 - **Build decision:** no APK/EXE build. This change is a Python/SQLite path-reservation and schema-migration contract, directly covered by source tests on both target hosts; packaging would not answer a stronger runtime question.
 - **Google Drive Handoff:** `PDF Studio — HANDOFF` remains **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The specified Drive document was not updated; no successful sync is claimed.
 - No paid tools/runners, user documents, secrets, merge, auto-merge, or `main` changes.
+
+
+## 2026-10-27 — Win32 output-path alias regression (B01 remains OPEN)
+
+- **Code/test SHA:** [\`45ca1ea3f2cc8c6b9b7941deb8fc6346f47de68c\`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/45ca1ea3f2cc8c6b9b7941deb8fc6346f47de68c).
+- **PASS:** [CI #40558639455](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40558639455), Ubuntu + Windows, 172 tests per host. The Windows-only regression proves that a journal reservation for \`Trailing-Alias.pdf\` rejects both trailing-dot and trailing-space aliases. The destination key preserves extended/device namespace semantics separately.
+- **PASS:** same CI's synthetic 100-page and 64 MiB extraction checks on both hosts, plus Linux 1000/5000-page checkpoint-crash-resume and FTS integrity checks.
+- **NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scans, reboot recovery, hostile-PDF sandbox, Android SAF/UI/APK/device, Windows GUI/EXE/device, full F01–F10. B01 stays **IN PROGRESS**; do not open B02.
+- **Build decision:** no APK/EXE; packaging would not strengthen evidence for this Python path-reservation change.
+- **Drive sync:** \`PDF Studio — HANDOFF\` remains **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector; no update is claimed.
