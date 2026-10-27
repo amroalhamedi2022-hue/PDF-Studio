@@ -120,10 +120,14 @@ class _CappedWriter:
 
 
 def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
-             digests: tuple[str, ...], max_output_bytes: int) -> None:
+             digests: tuple[str, ...], max_output_bytes: int, *,
+             expected_pages: int) -> None:
     # The parent has already reserved this private staging file on the same
     # filesystem as the destination. Reuse it instead of allocating a second
     # full-size temporary copy.
+    if (not isinstance(expected_pages, int) or isinstance(expected_pages, bool)
+            or expected_pages < 1):
+        raise ValueError("expected_pages must be a positive integer")
     created = False
     try:
         with output.open("r+b") as fh:
@@ -136,6 +140,23 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
             fh.truncate(capped.length)
             fh.flush()
             os.fsync(fh.fileno())
+
+        # A header and nonzero byte count do not prove that the page tree is
+        # readable or that a transformation retained the requested pages.
+        # Reopen the staged result before publication and fail closed on either
+        # a parser error or an unexpected page count.
+        with output.open("rb") as validation_stream:
+            if validation_stream.read(5) != b"%PDF-":
+                raise PageToolError("generated PDF has no valid PDF header")
+            validation_stream.seek(0)
+            try:
+                actual_pages = len(PdfReader(validation_stream, strict=False).pages)
+            except Exception as exc:
+                raise PageToolError("generated PDF failed structural validation") from exc
+        if actual_pages != expected_pages:
+            raise PageToolError(
+                f"generated PDF page count mismatch: expected {expected_pages}, got {actual_pages}"
+            )
         if any(sha256_file(src) != digest for src, digest in zip(sources, digests)):
             raise PageToolError("source changed during PDF operation")
     except BaseException:
@@ -194,7 +215,8 @@ def _extract_pages_direct(source: str | Path, output: str | Path, pages: Iterabl
         writer = PdfWriter()
         for index in selected:
             writer.add_page(reader.pages[index])
-        _publish(writer, dst, (src,), digests, max_output_bytes)
+        _publish(writer, dst, (src,), digests, max_output_bytes,
+                 expected_pages=len(selected))
     return dst
 
 
@@ -219,7 +241,8 @@ def _merge_pdfs_direct(sources: Iterable[str | Path], output: str | Path,
                 raise PageToolError('total page count exceeds configured limit')
             for page in reader.pages:
                 writer.add_page(page)
-        _publish(writer, dst, tuple(inputs), digests, max_output_bytes)
+        _publish(writer, dst, tuple(inputs), digests, max_output_bytes,
+                 expected_pages=total_pages)
     return dst
 
 
@@ -255,7 +278,8 @@ def _rotate_pages_direct(source: str | Path, output: str | Path,
             if index in selected_set:
                 page.rotate(rotation)
             writer.add_page(page)
-        _publish(writer, dst, (src,), digests, max_output_bytes)
+        _publish(writer, dst, (src,), digests, max_output_bytes,
+                 expected_pages=count)
     return dst
 
 
@@ -292,7 +316,8 @@ def _delete_pages_direct(source: str | Path, output: str | Path,
         for index, page in enumerate(reader.pages):
             if index not in removed:
                 writer.add_page(page)
-        _publish(writer, dst, (src,), digests, max_output_bytes)
+        _publish(writer, dst, (src,), digests, max_output_bytes,
+                 expected_pages=count - len(removed))
     return dst
 
 
@@ -326,7 +351,8 @@ def _reorder_pages_direct(source: str | Path, output: str | Path,
         writer = PdfWriter()
         for index in selected:
             writer.add_page(reader.pages[index])
-        _publish(writer, dst, (src,), digests, max_output_bytes)
+        _publish(writer, dst, (src,), digests, max_output_bytes,
+                 expected_pages=count)
     return dst
 
 
@@ -376,7 +402,8 @@ def _crop_pages_direct(source: str | Path, output: str | Path,
                 page.cropbox.lower_left = (left, bottom)
                 page.cropbox.upper_right = (right, top)
             writer.add_page(page)
-        _publish(writer, dst, (src,), digests, max_output_bytes)
+        _publish(writer, dst, (src,), digests, max_output_bytes,
+                 expected_pages=count)
     return dst
 
 
