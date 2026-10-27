@@ -659,3 +659,27 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **NOT TESTED:** image-only/scanned pages under real OCR; Arabic/English OCR quality; unsupported/complex font encodings not extractable by pypdf; realistic scanned/large PDFs including >=2 GiB; OS reboot recovery; hostile-PDF sandboxing; Android SAF/native UI; Windows GUI/EXE; visual fidelity and Xiaomi Pad 5 runtime.
 - **Google Drive `PDF Studio — HANDOFF` sync: FAILED / NOT AVAILABLE.** No Google Docs/Drive write connector is exposed in this runtime; the specified Drive document was not updated and no sync success is claimed.
 - **Next:** continue B01 output-integrity and resource gates before opening B02. PR #2 remains draft/open; no merge, auto-merge or `main` changes.
+
+## 2026-10-27 — identity-safe staging reservation cleanup (B01 remains OPEN)
+
+**Active milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity`. No B02 work started.
+
+### Production change
+- `_reserve_staging_file()` captures the created descriptor's device/inode before allocation, uses `O_NOFOLLOW` where supported, verifies descriptor identity/size and that the staging pathname still names the same regular file after allocation.
+- On allocation failure, cleanup removes only the original reservation inode. If the path was replaced concurrently, the replacement is preserved instead of being unlinked by name.
+- This narrows a cleanup race; it is not an OS sandbox and does not claim protection against every same-user filesystem race.
+
+### Regression and CI evidence
+- Production commit: [`9183094f87a30316c5466edeb90fa243d5e4dc43`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/9183094f87a30316c5466edeb90fa243d5e4dc43).
+- Final portable regression-test commit: [`59ed0017e25102559e772760990d36a701436957`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/59ed0017e25102559e772760990d36a701436957). The injected ENOSPC case replaces the reservation path and verifies the unrelated replacement survives cleanup.
+- Initial CI [#40494304096](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40494304096) exposed a Windows-only test-fixture issue: the fixture attempted to rename an open file. The fixture was corrected to close its injected descriptor before the deterministic path replacement; this was a test portability failure, not a production-code failure.
+- Exact final source/test head [`59ed0017e25102559e772760990d36a701436957`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/59ed0017e25102559e772760990d36a701436957): [CI #40494627830](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40494627830) **PASS** on Ubuntu and Windows, 167 tests per host. Syntax checks PASS; 100-page smoke and 64 MiB disk-backed extraction PASS on both hosts; Linux 1,000/5,000-page synthetic checkpoint/crash/resume/FTS PASS. The 5,000-page fixture is 2.64 MB born-digital synthetic data; it is not a realistic scanned/2 GiB corpus. Windows process RSS is not measured.
+- No APK/EXE build: the question was whether failed reservation cleanup can delete a concurrently substituted path. The cross-platform source regression directly tests this filesystem contract; packaging would not add evidence.
+
+### B01 acceptance and remaining gates
+- **PASS:** identity-bound reservation cleanup regression and full source CI on Ubuntu/Windows.
+- **IN PROGRESS:** optimized size splitting, broader real-PDF text/page-order fidelity, disk-pressure contention and interrupted multi-output publication.
+- **NOT TESTED:** actual OS reboot recovery; realistic scanned/large PDFs including >=2 GiB; Arabic/English OCR quality; hostile-PDF sandboxing; Android SAF/native UI; Windows GUI/EXE; visual fidelity and Xiaomi Pad 5 runtime.
+- **Google Drive `PDF Studio — HANDOFF` sync: FAILED / NOT AVAILABLE.** No Google Docs/Drive write connector is exposed in this runtime; the specified Drive document was not updated and no sync success is claimed.
+- **Next:** continue B01 output-integrity and resource gates before opening B02. PR #2 remains draft/open; no merge, auto-merge or `main` changes.
+
