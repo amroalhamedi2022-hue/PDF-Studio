@@ -8,6 +8,7 @@ silently trusting damaged artifacts. SQLite is used transactionally.
 from __future__ import annotations
 
 import hashlib
+import os
 from contextlib import contextmanager
 from typing import Iterator
 import sqlite3
@@ -82,6 +83,7 @@ class JobJournal:
                     source TEXT NOT NULL,
                     input_sha256 TEXT NOT NULL,
                     output TEXT NOT NULL,
+                    output_key TEXT,
                     page_count INTEGER NOT NULL CHECK (page_count > 0),
                     state TEXT NOT NULL
                 );
@@ -99,6 +101,26 @@ class JobJournal:
                     token TEXT
                 );
             """)
+            # Older B00/B01 journals do not have output_key. Backfill it without
+            # rewriting the user-visible output path; the index makes subsequent
+            # alias checks cheap while keeping legacy duplicate rows readable.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
+            if "output_key" not in columns:
+                db.execute("ALTER TABLE jobs ADD COLUMN output_key TEXT")
+            legacy_rows = db.execute(
+                "SELECT job_id, output FROM jobs WHERE output_key IS NULL OR output_key=''"
+            ).fetchall()
+            for row in legacy_rows:
+                db.execute(
+                    "UPDATE jobs SET output_key=? WHERE job_id=?",
+                    (self._destination_key(row["output"]), row["job_id"]),
+                )
+            db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_output_key ON jobs(output_key)")
+
+    @staticmethod
+    def _destination_key(path: str | Path) -> str:
+        """Canonical comparison key; Windows paths are case-insensitive."""
+        return os.path.normcase(os.path.normpath(str(Path(path))))
 
     @contextmanager
     def _open(self) -> Iterator[sqlite3.Connection]:
@@ -119,6 +141,7 @@ class JobJournal:
         """Pin source digest. Never overwrite the input or an existing output."""
         src = Path(source).resolve(strict=True)
         dst = Path(output).resolve()
+        destination_key = self._destination_key(dst)
         if not src.is_file():
             raise JobSafetyError("source must be an ordinary file")
         if dst == src:
@@ -152,13 +175,17 @@ class JobJournal:
             if dst.exists():
                 raise FileExistsError(f"output already exists: {dst}")
             reserved = db.execute(
-                "SELECT 1 FROM jobs WHERE output=? LIMIT 1", (str(dst),)
+                "SELECT 1 FROM jobs WHERE output_key=? LIMIT 1", (destination_key,)
             ).fetchone()
             if reserved is not None:
                 raise FileExistsError(
                     "output path is already reserved by a journaled job"
                 )
-            db.execute("INSERT INTO jobs VALUES (?,?,?,?,?,?)", (job_id, str(src), digest, str(dst), page_count, "pending"))
+            db.execute(
+                "INSERT INTO jobs(job_id, source, input_sha256, output, output_key, page_count, state) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (job_id, str(src), digest, str(dst), destination_key, page_count, "pending"),
+            )
         return job_id
 
     def get_job(self, job_id: str) -> dict:

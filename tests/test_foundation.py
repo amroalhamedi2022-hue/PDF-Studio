@@ -1,5 +1,7 @@
 """B00 source-only tests (no PDF renderer or Android/Windows package)."""
 
+import os
+import sqlite3
 import tempfile
 import unittest
 from unittest import mock
@@ -27,6 +29,49 @@ class JournalTests(unittest.TestCase):
         self.output.touch()
         with self.assertRaises(FileExistsError):
             self.journal.create_job(self.original, self.output, 1)
+
+    @unittest.skipUnless(os.name == "nt", "Windows case-insensitive path semantics required")
+    def test_output_reservation_rejects_case_aliases_on_windows(self):
+        first_path = self.root / "Output-Case-Alias.PDF"
+        second_path = self.root / "output-case-alias.pdf"
+        self.journal.create_job(self.original, first_path, 1)
+        with self.assertRaisesRegex(FileExistsError, "already reserved"):
+            self.journal.create_job(self.original, second_path, 1)
+        with self.journal._open() as db:
+            count = db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE output_key=?",
+                (self.journal._destination_key(first_path.resolve()),),
+            ).fetchone()[0]
+        self.assertEqual(count, 1)
+
+    def test_legacy_journal_migrates_output_reservation_key(self):
+        legacy_db = self.root / "legacy-jobs.sqlite"
+        output = self.root / "legacy-output.pdf"
+        with sqlite3.connect(legacy_db) as db:
+            db.execute("""CREATE TABLE jobs (
+                job_id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                input_sha256 TEXT NOT NULL,
+                output TEXT NOT NULL,
+                page_count INTEGER NOT NULL CHECK (page_count > 0),
+                state TEXT NOT NULL
+            )""")
+            db.execute(
+                "INSERT INTO jobs VALUES (?,?,?,?,?,?)",
+                ("legacy-job", str(self.original.resolve()), sha256_file(self.original),
+                 str(output.resolve()), 1, "pending"),
+            )
+        migrated = type(self.journal)(legacy_db)
+        with migrated._open() as db:
+            row = db.execute(
+                "SELECT output_key FROM jobs WHERE job_id='legacy-job'"
+            ).fetchone()
+        self.assertEqual(
+            row["output_key"],
+            migrated._destination_key(output.resolve()),
+        )
+        with self.assertRaisesRegex(FileExistsError, "already reserved"):
+            migrated.create_job(self.original, output, 1)
 
     def test_bad_header_rejected(self):
         self.original.write_text("not pdf")
