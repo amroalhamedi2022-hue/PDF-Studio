@@ -539,3 +539,31 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - The one-based page-range parser checks expanded selection size before allocating range/repeated-page entries, including `all`, and accepts an explicit `max_selections` ceiling. It also rejects overlong comma-separated selection text before token-list allocation. Intentional duplicate-page semantics remain supported within the configured cap.
 - Regression tests assert rejection after consuming only cap+1 items and before worker spawn/publication; coverage includes infinite group and page-index generators, repeated ranges and oversized range text.
 - Exact code/test SHA `5f875f0a7cdd2baabfeced429a626e6e55288e48`: [CI #40418270025](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40418270025) **PASS** on Ubuntu and Windows. Each host passed 154 source tests; Ubuntu skipped four Windows-only tests. Both hosts passed the 100-page smoke and disk-backed 64 MiB extraction. Linux also passed the 1000-page benchmark and the 5000-page checkpoint/crash/resume/FTS test: 2500 durable checkpoints survived the intentional process exit; resume processed the remaining 2500, then verified reuse skipped all 5000. Linux synthetic input was 2,638,282 bytes (born-digital), with source SHA unchanged and FTS integrity PASS; parent/max-child peak RSS was 53.05/53.96 MiB (not summed). Windows 100-page smoke was 0.315 s; Windows RSS is not measured by this benchmark. The 64 MiB fixture is synthetic, not scanned/OCR or a realistic >=2 GiB PDF. These results do not establish hostile-input sandboxing, Android/Windows GUI, or device acceptance. B01 remains OPEN. Google Drive Handoff sync is NOT AVAILABLE in this runtime.
+
+## 2026-10-27 — bounded top-level bookmark split (B01 remains OPEN)
+
+**Active milestone:** B01 — Resource-Bounded PDF Core. This slice closes the bookmark-based split sub-gate only; it does not open B02 or claim full F08.01 acceptance.
+
+**Production changes**
+- Added `inspect_top_level_bookmark_starts()` in `engine/pdfstudio/inspection.py`. PDF outline parsing runs in a child process with POSIX resource limits or a Windows Job Object, wall timeout, page-count cap, and a hard 100 top-level-bookmark cap. It rejects encrypted/signed inputs using the existing fail-closed preflight, rejects malformed/out-of-range destinations, and never sends bookmark titles or document text over IPC.
+- Added `split_pdf_by_bookmarks()` in `engine/pdfstudio/page_tools.py`. Direct/top-level bookmarks define split boundaries; nested outline entries are ignored to avoid unexpectedly multiplying parts. Pages before the first bookmark become a separate preface part. Filenames remain numeric and never incorporate untrusted document titles.
+- The bookmark plan returns the source SHA-256; the existing range splitter checks that pinned digest before staging any output, then retains its per-part/aggregate byte caps, private staging directory, source rechecks, no-clobber publication and rollback behavior.
+- Uses the existing pinned `pypdf==6.21.2` public APIs. No new dependency or copied upstream implementation was introduced.
+
+**Acceptance criteria for this slice**
+1. Split at top-level bookmark starts while preserving page order and all page bytes/content as supported by pypdf.
+2. Ignore nested outline lists; include preface pages as a distinct first part when the first bookmark is not page 1.
+3. Never use bookmark titles as output paths.
+4. Reject missing/malformed outlines, excessive bookmark counts, encrypted/signed inputs, and a source whose SHA changes after planning without publishing outputs.
+5. Keep inspection bounded and keep final publication on the existing no-clobber split transaction.
+6. Pass the exact source/test SHA on Ubuntu and Windows.
+
+**Regression coverage:** three tests verify preface + chapter grouping and nested-bookmark handling, missing-outline rejection without outputs, and stale source-SHA rejection before publication.
+
+**Exact source/test head:** `4d1420a2cfd7ff7cdf78021bf44eab6b667578b7`. GitHub Actions [#40432289835](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40432289835) **PASS** on Ubuntu + Windows. Each host passed 157 tests; Ubuntu skipped four Windows-only tests. Python syntax checks passed. The synthetic 100-page smoke and disk-backed 64 MiB extraction passed on both hosts. Linux 1000-page indexing passed (526,269-byte synthetic PDF; 0.986 s); the 5000-page checkpoint test passed with 2500 durable checkpoints before the intentional exit, 2500 resumed pages, 5000 verified pages, SQLite FTS integrity PASS and unchanged source SHA. The 5000-page fixture is a 2.64 MB born-digital synthetic PDF, not a scanned or realistic >=2 GiB document. Linux process high-water marks were 53.00 MiB parent / 54.10 MiB maximum child (not summed); Windows RSS is not measured by this benchmark.
+
+**Build decision:** no APK/EXE build. The question is bounded Python outline parsing and split-transaction correctness; the cross-platform source/integration suite directly exercises those behaviors. Packaging either app would not strengthen this test.
+
+**NOT TESTED / remaining in B01:** split by target byte size; a more efficient single-pass multi-part split; Android/Windows page-tool UI and visual acceptance; realistic large/scanned PDFs including >=2 GiB where resources permit; OCR Arabic/English; crash/reboot during multi-output publication; device acceptance and hostile-PDF sandboxing. Keep B01 OPEN and do not start B02 until the remaining B01 gates have evidence.
+
+**Google Drive handoff:** **FAILED / NOT AVAILABLE**. This runtime exposes no Google Docs/Drive write connector, so the specified `PDF Studio — HANDOFF` document was not updated. No sync success is claimed; development continues.
