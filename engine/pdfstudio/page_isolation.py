@@ -79,14 +79,27 @@ def _check_free_space(directory: Path, estimated_output_bytes: int,
 
 
 def _reserve_staging_file(path: Path, estimated_output_bytes: int) -> tuple[int, int]:
-    """Reserve output space and return the reserved file's device/inode identity."""
+    """Reserve output space and return the reserved file's device/inode identity.
+
+    Cleanup is identity-bound: if the pathname is replaced while allocation
+    fails, never unlink the replacement as though it were our reservation.
+    """
     from .page_tools import PageToolError
 
+    open_flags = (os.O_CREAT | os.O_EXCL | os.O_RDWR
+                  | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
     try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+        fd = os.open(path, open_flags, 0o600)
     except OSError as exc:
         raise PageToolError("could not reserve estimated PDF output space") from exc
+
+    expected_identity: tuple[int, int] | None = None
     try:
+        opened_info = os.fstat(fd)
+        if not stat.S_ISREG(opened_info.st_mode):
+            raise OSError("reserved staging descriptor is not a regular file")
+        expected_identity = (opened_info.st_dev, opened_info.st_ino)
+
         if os.name == "posix":
             fallocate = getattr(os, "posix_fallocate", None)
             if fallocate is None:
@@ -96,22 +109,41 @@ def _reserve_staging_file(path: Path, estimated_output_bytes: int) -> tuple[int,
             # Windows CRT file extension allocates the reserved staging length;
             # the later writer truncates it to the actual PDF size.
             os.ftruncate(fd, estimated_output_bytes)
+
         os.fsync(fd)
-        if os.fstat(fd).st_size != estimated_output_bytes:
-            raise OSError("reserved staging file has an unexpected size")
+        descriptor_info = os.fstat(fd)
+        if ((descriptor_info.st_dev, descriptor_info.st_ino) != expected_identity
+                or descriptor_info.st_size != estimated_output_bytes):
+            raise OSError("reserved staging descriptor changed during allocation")
+
+        # Check the pathname too: a same-user process may have replaced it while
+        # the descriptor was being allocated. The open descriptor alone cannot
+        # prove that the caller-visible staging path still names our inode.
+        path_info = path.lstat()
+        if (not stat.S_ISREG(path_info.st_mode)
+                or (path_info.st_dev, path_info.st_ino) != expected_identity
+                or path_info.st_size != estimated_output_bytes):
+            raise OSError("reserved staging path changed during allocation")
     except BaseException as exc:
-        os.close(fd)
         try:
-            path.unlink()
+            os.close(fd)
         except OSError:
             pass
+        # Never delete a different file merely because it occupies our path.
+        if expected_identity is not None:
+            try:
+                current_info = path.lstat()
+                if (stat.S_ISREG(current_info.st_mode)
+                        and (current_info.st_dev, current_info.st_ino) == expected_identity):
+                    path.unlink()
+            except OSError:
+                pass
         if isinstance(exc, (OSError, NotImplementedError)):
             raise PageToolError("could not reserve estimated PDF output space") from exc
         raise
     else:
-        info = os.fstat(fd)
         os.close(fd)
-        return (info.st_dev, info.st_ino)
+        return expected_identity
 
 
 def _verify_staging_file(path: Path, expected_identity: tuple[int, int],
