@@ -107,3 +107,14 @@ Every Fxx.yy must have at least one reproducible automated check or honest manua
 - **NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scans, reboot recovery, hostile-PDF sandbox, Android SAF/UI/APK/device, Windows GUI/EXE/device, full F01–F10. B01 stays **IN PROGRESS**; do not open B02.
 - **Build decision:** no APK/EXE; packaging would not strengthen evidence for this Python path-reservation change.
 - **Drive sync:** \`PDF Studio — HANDOFF\` remains **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector; no update is claimed.
+
+## 2026-10-27 checkpoint — immutable artifact identity (F04.03 still IN PROGRESS)
+
+The B01 journal now rejects reuse of the same physical checkpoint file across different page/job keys, including hard-link aliases, where the filesystem exposes stable device/inode identity. A separate indexed SQLite identity map preserves the existing checkpoints table and backfills legacy rows without dropping job history. Same-file in-place mutation fails closed.
+
+- Production: [`b5721ff174a87c3de81af8f8cd4e154a35ea3d13`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/b5721ff174a87c3de81af8f8cd4e154a35ea3d13)
+- Regression tests: [`68b2a7850f72a992805ffcdaf2122dd152308f4c`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/68b2a7850f72a992805ffcdaf2122dd152308f4c)
+- Exact CI: [`#40576225759 PASS`](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40576225759), Ubuntu + Windows, 173 tests per host.
+- Synthetic 100-page + 64 MiB extraction: PASS on both hosts; Linux 1000/5000-page interruption/resume and FTS integrity: PASS.
+- **NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scanned PDFs, OS-reboot recovery, hostile-input sandbox, Android SAF/UI/APK/device, Windows GUI/EXE/device, and full F01–F10 acceptance. B01 remains OPEN; B02 remains closed.
+- Google Drive `PDF Studio — HANDOFF` sync: FAILED / NOT AVAILABLE (no Docs/Drive write connector exposed); no successful update is claimed.
