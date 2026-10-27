@@ -634,3 +634,28 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Google Drive `PDF Studio — HANDOFF` sync: FAILED / NOT AVAILABLE.** No Google Docs/Drive write connector is exposed in this runtime; the specified document was not updated and no sync success is claimed.
 - **Next:** keep B01 OPEN and finish the remaining B01 resource/output-integrity gates before opening B02. PR #2 stays draft/open; do not merge or modify `main`.
 
+
+
+## 2026-10-27 — native-text preservation at the PDF publication boundary (source CI PASS; B01 remains OPEN)
+
+**Active milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity`. This change stays inside B01; B02 is not opened.
+
+### Production change
+- `_publish()` now computes a SHA-256 digest for each page's extractable native text before serialization, then reopens the generated PDF and compares per-page digests in page order after structural/page-count validation.
+- A changed or missing text layer on a page that was extractable before writing fails closed and removes the staging inode. Only per-page digests are retained; extracted document text is not persisted, logged or sent to services.
+- Image-only pages and pages where pypdf text extraction raises are deliberately marked unverified by this check. It is a native-text preservation guard, **not OCR, a visual comparison, signature validation or an OS sandbox**.
+
+### Regression evidence
+- Added a born-digital synthetic text PDF round-trip test that verifies reordered extraction preserves both text and page order.
+- Added a negative regression using an injected writer that silently drops a text layer; publication is rejected and staging is removed while the source remains intact.
+- Production implementation: [`9f2ed8c571ea20ba5c8518ec18380462ec19adf0`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/9f2ed8c571ea20ba5c8518ec18380462ec19adf0).
+- Test fixture contract correction: [`08caabd15ac47dc47415b1969fa60d6d3afcd9fb`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/08caabd15ac47dc47415b1969fa60d6d3afcd9fb). The first CI attempt [#40479528200](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40479528200) exposed two existing fake-writer fixtures without a `pages` interface; the fixtures were corrected to conform to the `PdfWriter` contract. This was a test-double error, not a production regression.
+- Exact final source/test head [`08caabd15ac47dc47415b1969fa60d6d3afcd9fb`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/08caabd15ac47dc47415b1969fa60d6d3afcd9fb): [CI #40479737258](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40479737258) **PASS** on Ubuntu and Windows; 166 tests per host, four Windows-only tests skipped on Ubuntu. Syntax checks PASS; 100-page and 64 MiB disk-backed smoke PASS on both hosts; Linux 1,000/5,000-page synthetic checkpoint/resume/FTS PASS. The 5,000-page fixture is 2.64 MB born-digital synthetic data, not a scanned or realistic >=2 GiB corpus.
+- No APK/EXE build: this round's question was whether native text survives page serialization and whether publication rejects a dropped text layer. The source suite directly tests that contract on both hosts; packaging would not add evidence.
+
+### B01 acceptance and remaining gates
+- **PASS:** cross-platform page-tool source suite and new native-text round-trip/text-loss regressions on the exact SHA above.
+- **IN PROGRESS:** optimized single-pass size splitting, broader text/page-order fidelity checks across complex PDFs and operations, disk-pressure contention and interrupted multi-output publication.
+- **NOT TESTED:** image-only/scanned pages under real OCR; Arabic/English OCR quality; unsupported/complex font encodings not extractable by pypdf; realistic scanned/large PDFs including >=2 GiB; OS reboot recovery; hostile-PDF sandboxing; Android SAF/native UI; Windows GUI/EXE; visual fidelity and Xiaomi Pad 5 runtime.
+- **Google Drive `PDF Studio — HANDOFF` sync: FAILED / NOT AVAILABLE.** No Google Docs/Drive write connector is exposed in this runtime; the specified Drive document was not updated and no sync success is claimed.
+- **Next:** continue B01 output-integrity and resource gates before opening B02. PR #2 remains draft/open; no merge, auto-merge or `main` changes.
