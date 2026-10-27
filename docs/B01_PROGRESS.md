@@ -593,3 +593,18 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Build decision:** no APK/EXE build. This change is in the Python processing engine and the question is output parseability/page-count correctness; the exact cross-platform source suite directly exercises it. Packaging would not add evidence for this contract.
 - **Google Drive `PDF Studio — HANDOFF` sync: FAILED / NOT AVAILABLE.** This runtime exposes no Google Docs/Drive write connector, so the specified document was not updated. No sync success is claimed.
 - **Next:** continue B01 and close its remaining source/resource gates before opening B02. Keep PR #2 draft/open; do not merge or modify `main`.
+
+## 2026-10-27 — staged-path identity race during failed PDF publication
+
+**Active milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity` (OPEN).
+
+- **Production change:** `_publish()` now pins the staging file's device/inode before writing, rejects non-regular paths, opens with `O_NOFOLLOW` where the host provides it, checks descriptor/path identity before and after writing, and validates through a separately opened descriptor. On failure it removes the staging path only if that path still names the exact inode observed at entry; a replacement file is preserved.
+- **Regression:** added `test_publish_preserves_replacement_path_when_writer_fails`. It deterministically moves the original staging inode away, places unrelated bytes at the old path, injects a write failure, and verifies cleanup preserves both files. The fixture closes the open descriptor before rename so it is portable to Windows.
+- **Production commit:** [`94c04c5e35f0f430fad72d55a0f66d89a9efc805`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/94c04c5e35f0f430fad72d55a0f66d89a9efc805).
+- **Test checkpoint:** [`ef370cc4b03f692569e5a5ffda9436d219b22dd4`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/ef370cc4b03f692569e5a5ffda9436d219b22dd4).
+- Exact PR source-check run [#40454363285](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40454363285) was **PENDING** at this checkpoint; no PASS is claimed until its conclusion is observed.
+- **Scope/limits:** this narrows a staging-path replacement race and prevents cleanup from deleting a different inode. It is not an OS sandbox and does not claim protection from every same-user Windows filesystem race. Existing output structural/page-count checks remain in place.
+- **B01 status:** **OPEN / IN PROGRESS**. Split-by-target-size, more efficient multi-part splitting, text-layer fidelity, realistic large/scanned corpus, Arabic/English OCR, reboot recovery, Android/Windows GUI and device acceptance remain unaccepted or NOT TESTED.
+- **Build decision:** no APK/EXE build; this is a Python filesystem-race contract directly covered by source tests. Packaging would not answer the test question.
+- **Google Drive `PDF Studio — HANDOFF` sync:** **FAILED / NOT AVAILABLE**. No Google Docs/Drive write connector is exposed in this runtime; the Drive document was not changed and no sync success is claimed.
+
