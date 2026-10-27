@@ -44,6 +44,19 @@ class JournalTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(count, 1)
 
+    @unittest.skipUnless(os.name == "nt", "Win32 trailing-dot/space alias semantics required")
+    def test_output_reservation_rejects_trailing_dot_and_space_aliases_on_windows(self):
+        first_path = self.root / "Trailing-Alias.pdf"
+        self.journal.create_job(self.original, first_path, 1)
+        aliases = (
+            self.root / "Trailing-Alias.pdf.",
+            self.root / "Trailing-Alias.pdf ",
+        )
+        for alias in aliases:
+            with self.subTest(alias=str(alias)):
+                with self.assertRaisesRegex(FileExistsError, "already reserved"):
+                    self.journal.create_job(self.original, alias, 1)
+
     def test_legacy_journal_migrates_output_reservation_key(self):
         legacy_db = self.root / "legacy-jobs.sqlite"
         output = self.root / "legacy-output.pdf"

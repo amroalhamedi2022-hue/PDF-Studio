@@ -122,8 +122,22 @@ class JobJournal:
 
     @staticmethod
     def _destination_key(path: str | Path) -> str:
-        """Canonical comparison key; Windows paths are case-insensitive."""
-        return os.path.normcase(os.path.normpath(str(Path(path))))
+        """Canonical key for ordinary destination paths on the current platform.
+
+        Win32 aliases ordinary path components that end in dots or spaces.
+        Extended/device namespace paths keep their separate path semantics.
+        """
+        raw = str(Path(path))
+        if os.name == "nt" and raw.startswith(("\\\\?\\", "\\\\.\\")):
+            return os.path.normcase(os.path.normpath(raw))
+
+        value = os.path.normpath(raw)
+        if os.name == "nt":
+            drive, tail = os.path.splitdrive(value)
+            components = [component.rstrip(" .") for component in tail.split(os.sep)]
+            tail = os.path.normpath(os.sep.join(components))
+            value = drive + tail
+        return os.path.normcase(os.path.normpath(value))
 
     @contextmanager
     def _open(self) -> Iterator[sqlite3.Connection]:
