@@ -123,6 +123,32 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(SourceChangedError):
             reopened.recovery_snapshot(job, "ocr")
 
+    def test_recovery_rejects_out_of_range_checkpoint_rows(self):
+        job = self.journal.create_job(self.original, self.output, 3)
+        self.journal.set_state(job, "running")
+        good = self.root / "page0.txt"
+        out_of_range = self.root / "orphan-page-99.txt"
+        good.write_text("page zero", encoding="utf-8")
+        out_of_range.write_text("not a page in this document", encoding="utf-8")
+        self.journal.checkpoint(job, 0, "ocr", good)
+
+        # Simulate a malformed/legacy SQLite row that bypassed checkpoint().
+        # The schema only enforces page_index >= 0; recovery must also enforce
+        # the immutable page_count stored with the job.
+        with self.journal._open() as db:
+            db.execute(
+                "INSERT INTO checkpoints VALUES (?,?,?,?,?)",
+                (job, 99, "ocr", str(out_of_range), sha256_file(out_of_range)),
+            )
+
+        audit = self.journal.recovery_snapshot(job, "ocr")
+        self.assertEqual(audit["valid_pages"], (0,))
+        self.assertEqual(audit["invalid_pages"], (99,))
+        self.assertEqual(audit["missing_pages"], (1, 2))
+        self.assertEqual(self.journal.resumable_pages(job, "ocr"), [0])
+        with self.assertRaisesRegex(ValueError, "page index out of bounds"):
+            self.journal.verified_checkpoint(job, 99, "ocr")
+
     def test_recovery_audit_is_read_only_for_paused_jobs(self):
         job = self.journal.create_job(self.original, self.output, 2)
         self.journal.set_state(job, "running")
