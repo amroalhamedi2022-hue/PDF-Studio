@@ -850,6 +850,7 @@ def split_pdf_by_size(source: str | Path, output_dir: str | Path, *,
                 middle = (low + high) // 2
                 candidate = probe_dir / f"probe-{probe_number:05d}.pdf"
                 probe_number += 1
+                candidate_identity: tuple[int, int] | None = None
                 try:
                     extract_pages(
                         src, candidate, f"{start + 1}-{middle + 1}",
@@ -860,6 +861,7 @@ def split_pdf_by_size(source: str | Path, output_dir: str | Path, *,
                     candidate_info = candidate.lstat()
                     if not stat.S_ISREG(candidate_info.st_mode) or candidate_info.st_size < 5:
                         raise PageToolError("size probe produced an invalid PDF part")
+                    candidate_identity = (candidate_info.st_dev, candidate_info.st_ino)
                     if candidate_info.st_size <= part_cap:
                         best_end, best_size = middle, candidate_info.st_size
                         low = middle + 1
@@ -874,10 +876,19 @@ def split_pdf_by_size(source: str | Path, output_dir: str | Path, *,
                         single_page_error = exc
                     high = middle - 1
                 finally:
-                    try:
-                        candidate.unlink()
-                    except FileNotFoundError:
-                        pass
+                    # Never unlink a path merely because it has our candidate
+                    # name. Remove only the regular-file inode returned by the
+                    # successful isolated extraction; a pre-existing or
+                    # concurrently substituted path is not ours to delete.
+                    if candidate_identity is not None:
+                        try:
+                            current_info = candidate.lstat()
+                            if (stat.S_ISREG(current_info.st_mode)
+                                    and (current_info.st_dev, current_info.st_ino)
+                                    == candidate_identity):
+                                candidate.unlink()
+                        except FileNotFoundError:
+                            pass
 
             if best_end is None or best_size is None:
                 raise PageToolError(
