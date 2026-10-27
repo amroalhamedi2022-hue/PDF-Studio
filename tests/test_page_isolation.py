@@ -287,7 +287,8 @@ class IsolatedPageToolTests(unittest.TestCase):
 
         with mock.patch("pdfstudio.page_tools._CappedWriter.write", new=partial_then_enospc):
             with self.assertRaisesRegex(OSError, "concurrent disk exhaustion"):
-                _publish(writer, staged, (self.a,), (sha256_file(self.a),), 1024 * 1024)
+                _publish(writer, staged, (self.a,), (sha256_file(self.a),), 1024 * 1024,
+                         expected_pages=1)
 
         self.assertFalse(staged.exists())
         self.assertEqual(self.a.read_bytes(), source_before)
