@@ -1,7 +1,7 @@
 # PDF Studio — Master Execution Plan v1.0
 **Date:** 2026-10-24  
-**Status:** APPROVED SCOPE / NOT IMPLEMENTED  
-**Working repository:** `amroalhamedi2022-hue/pdf-studio` (pending creation/verification by owner)  
+**Status:** APPROVED SCOPE / IMPLEMENTATION ACTIVE — B01 IN PROGRESS  
+**Working repository:** `amroalhamedi2022-hue/PDF-Studio` (public repository verified; PR #1 B00 and PR #2 B01 active)  
 **Platforms:** Android (Xiaomi Pad 5 first; phones) + Windows 11 (MSI Sword 15 first).  
 **Mission:** Offline-first end-to-end PDF viewing, OCR, large-file processing, reconstruction, editing, archival, workflow automation, and quality assurance.
 
@@ -172,9 +172,14 @@ Every batch requires implementation, relevant automated tests, evidence links, i
 - PyMuPDF licensing: https://pymupdf.io/licensing
 - Stirling PDF licensing: https://github.com/Stirling-Tools/Stirling-PDF/blob/main/LICENSE
 
-## 9. Immediate next action
-1. Owner creates PUBLIC repository `amroalhamedi2022-hue/pdf-studio` and grants the existing GitHub connector repository access if needed.
-2. Check latest state; create `feature/b00-foundation`; commit this plan without modifying any other project.
-3. Complete B00 license/architecture spike, tests/references and source-only CI; proceed batch-by-batch through gates.
+## 9. Current execution checkpoint — 2026-10-28
 
-**No source code or binary implementation has yet been created by this planning file.**
+- **Repository status:** the public repository exists and is active. PR #1 (`feature/b00-foundation`) is the B00 foundation; PR #2 (`feature/b01-pdf-core`) is open, draft and stacked on B00. Do not repeat repository creation or setup.
+- **Active milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity`. B01 must remain OPEN / PARTIAL until its acceptance gates are evidenced; do not open B02 yet.
+- **Latest source/test checkpoint:** [`9a7e7d40b0b3d2b5feaf3a66d85b24d12eae54ee`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/9a7e7d40b0b3d2b5feaf3a66d85b24d12eae54ee). Exact source-only CI [`#40594184983 PASS`](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40594184983), Ubuntu + Windows, 174 tests per host.
+- **Latest integrity improvement:** checkpoint verification now requires both SHA-256 and the recorded file identity to remain stable. Byte-identical path replacement fails closed in `verified_checkpoint()`, `resumable_pages()` and `recovery_snapshot()`; same-path re-registration cannot silently refresh identity.
+- **Synthetic scale evidence:** 100-page checks and 64 MiB disk-backed extraction PASS on both host OSes; Linux 1000-page and 5000-page abrupt-process resume/FTS checks PASS. These are born-digital synthetic fixtures, not OCR or realistic >=2 GiB scan acceptance.
+- **Build policy:** a purpose-driven APK/EXE test build is allowed when source tests cannot answer a specific runtime/device/integration question. No build was useful for this Python/SQLite change; final Android and Windows packaging remains a separate acceptance gate.
+- **Remaining B01 gates / NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scanned documents, OS-reboot recovery, hostile-PDF OS sandbox, Android SAF/UI/device, Windows GUI/EXE/device, and full F01–F10 acceptance.
+- **Google Drive Handoff:** the specified `PDF Studio — HANDOFF` document remains **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The Drive document was not updated.
+- **Next:** continue B01 recovery/output-integrity and realistic-resource gates, then platform adapters; only proceed to B02 after the B01 acceptance criteria are met. No merge, auto-merge, `main` edits, paid tools/runners, user documents or secrets.

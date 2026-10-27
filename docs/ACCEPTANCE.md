@@ -118,3 +118,15 @@ The B01 journal now rejects reuse of the same physical checkpoint file across di
 - Synthetic 100-page + 64 MiB extraction: PASS on both hosts; Linux 1000/5000-page interruption/resume and FTS integrity: PASS.
 - **NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scanned PDFs, OS-reboot recovery, hostile-input sandbox, Android SAF/UI/APK/device, Windows GUI/EXE/device, and full F01–F10 acceptance. B01 remains OPEN; B02 remains closed.
 - Google Drive `PDF Studio — HANDOFF` sync: FAILED / NOT AVAILABLE (no Docs/Drive write connector exposed); no successful update is claimed.
+
+
+## 2026-10-28 checkpoint — immutable artifact identity revalidation (F04.03 IN PROGRESS)
+
+A stored checkpoint is no longer accepted solely because its current bytes match the recorded SHA-256. Verification also checks the recorded file identity before and after hashing. A byte-identical replacement at the same path is invalidated by single-checkpoint verification, resumable-page enumeration and the read-only recovery snapshot; same-path re-registration cannot silently replace the recorded identity.
+
+- **Production + regression SHA:** [`9a7e7d40b0b3d2b5feaf3a66d85b24d12eae54ee`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/9a7e7d40b0b3d2b5feaf3a66d85b24d12eae54ee).
+- **Exact CI:** [`#40594184983 PASS`](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40594184983), Ubuntu + Windows, 174 tests per host; the replacement regression passed on both.
+- **Scale checks:** synthetic 100-page smoke and 64 MiB disk-backed extraction PASS on both OSes; Linux 1000-page and 5000-page abrupt-process resume/FTS checks PASS. The 5000-page PDF is 2.64 MB born-digital synthetic data, not a scanned/OCR corpus.
+- **NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scanned PDFs, OS-reboot recovery, hostile-input sandbox, Android SAF/UI/APK/device, Windows GUI/EXE/device, full F01–F10.
+- B01 remains OPEN / PARTIAL; B02 remains closed. No APK/EXE build was justified for this Python/SQLite contract.
+- Google Drive `PDF Studio — HANDOFF` sync: **FAILED / NOT AVAILABLE** (no Docs/Drive write connector exposed); no successful update is claimed.
