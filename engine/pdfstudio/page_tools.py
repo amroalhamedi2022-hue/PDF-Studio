@@ -20,6 +20,7 @@ from typing import Iterable
 from pypdf import PdfReader, PdfWriter
 
 from .page_ranges import PageRangeError, parse_page_ranges
+from .inspection import inspect_top_level_bookmark_starts
 from .jobs import sha256_file
 
 
@@ -503,7 +504,8 @@ def split_pdf(source: str | Path, output_dir: str | Path,
               max_pages: int = 10000,
               max_output_bytes: int = 1024 * 1024 * 1024,
               max_total_output_bytes: int = 1024 * 1024 * 1024,
-              free_space_margin_bytes: int = 16 * 1024 * 1024) -> tuple[Path, ...]:
+              free_space_margin_bytes: int = 16 * 1024 * 1024,
+              _expected_source_sha256: str | None = None) -> tuple[Path, ...]:
     """Split a PDF into explicitly selected page groups without clobbering outputs.
 
     Each group is either a one-based inclusive range string (for example
@@ -563,6 +565,9 @@ def split_pdf(source: str | Path, output_dir: str | Path,
         raise FileExistsError("one or more split output files already exist")
 
     source_digest = sha256_file(src)
+    if (_expected_source_sha256 is not None
+            and source_digest != _expected_source_sha256):
+        raise PageToolError("source changed after bookmark split planning")
     total_bytes = 0
     # target, expected identity, expected size, expected mtime, expected digest
     published: list[tuple[Path, tuple[int, int], int, int, str | None]] = []
@@ -679,3 +684,43 @@ def split_pdf(source: str | Path, output_dir: str | Path,
         # A staging failure occurs before publication and leaves no final outputs.
         # Publication failures are rolled back inside the staging-directory scope.
         raise
+
+def split_pdf_by_bookmarks(source: str | Path, output_dir: str | Path, *,
+                           base_name: str = "split",
+                           timeout_seconds: float = 90.0, max_memory_mb: int = 768,
+                           max_pages: int = 10000,
+                           max_output_bytes: int = 1024 * 1024 * 1024,
+                           max_total_output_bytes: int = 1024 * 1024 * 1024,
+                           free_space_margin_bytes: int = 16 * 1024 * 1024) -> tuple[Path, ...]:
+    """Split at top-level PDF bookmarks using bounded inspection and safe publication.
+
+    Output names are numeric and never include document-supplied bookmark titles.
+    Pages before the first bookmark become a separate preface part. Nested
+    bookmarks are ignored so a deeply nested outline cannot explode part count.
+    The inspected source SHA is pinned into split_pdf to reject changes between
+    outline planning and page extraction. The existing 100-part, per-part and
+    aggregate byte caps and no-clobber publication remain in force.
+    """
+    page_count, bookmark_starts, source_digest = inspect_top_level_bookmark_starts(
+        source, max_pages=max_pages, max_bookmarks=100,
+        timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+    )
+    boundaries = list(bookmark_starts)
+    if boundaries[0] > 0:
+        boundaries.insert(0, 0)
+    groups: list[str] = []
+    for index, start in enumerate(boundaries):
+        end = boundaries[index + 1] - 1 if index + 1 < len(boundaries) else page_count - 1
+        if end >= start:
+            groups.append(f"{start + 1}-{end + 1}")
+    if not groups or len(groups) > 100:
+        raise PageToolError("bookmark split requires between 1 and 100 nonempty parts")
+    return split_pdf(
+        source, output_dir, groups, base_name=base_name,
+        timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+        max_pages=max_pages, max_output_bytes=max_output_bytes,
+        max_total_output_bytes=max_total_output_bytes,
+        free_space_margin_bytes=free_space_margin_bytes,
+        _expected_source_sha256=source_digest,
+    )
+
