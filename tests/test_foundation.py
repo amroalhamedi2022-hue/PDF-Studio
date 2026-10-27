@@ -60,6 +60,8 @@ class JournalTests(unittest.TestCase):
     def test_legacy_journal_migrates_output_reservation_key(self):
         legacy_db = self.root / "legacy-jobs.sqlite"
         output = self.root / "legacy-output.pdf"
+        legacy_artifact = self.root / "legacy-page.txt"
+        legacy_artifact.write_text("legacy checkpoint", encoding="utf-8")
         db = sqlite3.connect(legacy_db)
         try:
             db.execute("""CREATE TABLE jobs (
@@ -70,10 +72,22 @@ class JournalTests(unittest.TestCase):
                 page_count INTEGER NOT NULL CHECK (page_count > 0),
                 state TEXT NOT NULL
             )""")
+            db.execute("""CREATE TABLE checkpoints (
+                job_id TEXT NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+                page_index INTEGER NOT NULL CHECK (page_index >= 0),
+                stage TEXT NOT NULL,
+                artifact TEXT NOT NULL,
+                artifact_sha256 TEXT NOT NULL,
+                PRIMARY KEY (job_id, page_index, stage)
+            )""")
             db.execute(
                 "INSERT INTO jobs VALUES (?,?,?,?,?,?)",
                 ("legacy-job", str(self.original.resolve()), sha256_file(self.original),
                  str(output.resolve()), 1, "pending"),
+            )
+            db.execute(
+                "INSERT INTO checkpoints VALUES (?,?,?,?,?)",
+                ("legacy-job", 0, "ocr", str(legacy_artifact.resolve()), sha256_file(legacy_artifact)),
             )
             db.commit()
         finally:
@@ -83,10 +97,19 @@ class JournalTests(unittest.TestCase):
             row = db.execute(
                 "SELECT output_key FROM jobs WHERE job_id='legacy-job'"
             ).fetchone()
+            identity_row = db.execute(
+                """SELECT artifact_identity FROM checkpoint_artifact_identity
+                WHERE job_id='legacy-job' AND page_index=0 AND stage='ocr'"""
+            ).fetchone()
         self.assertEqual(
             row["output_key"],
             migrated._destination_key(output.resolve()),
         )
+        self.assertEqual(
+            identity_row["artifact_identity"],
+            migrated._artifact_identity(legacy_artifact.resolve()),
+        )
+        self.assertEqual(migrated.resumable_pages("legacy-job", "ocr"), [0])
         with self.assertRaisesRegex(FileExistsError, "already reserved"):
             migrated.create_job(self.original, output, 1)
 
@@ -104,11 +127,36 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(self.journal.resumable_pages(job, "ocr"), [0])
         artifact.write_text("damaged")
         self.assertEqual(self.journal.resumable_pages(job, "ocr"), [])
+        with self.assertRaisesRegex(JobSafetyError, "immutable"):
+            self.journal.checkpoint(job, 0, "ocr", artifact)
         corrected = self.root / "page0-corrected.txt"
         corrected.write_text("corrected")
         self.journal.checkpoint(job, 0, "ocr", corrected)
         self.journal.set_state(job, "paused")
         self.assertEqual(JobJournal(self.root / "jobs.sqlite").resumable_pages(job, "ocr"), [0])
+
+    def test_checkpoint_hardlink_identity_cannot_be_reused(self):
+        first_job = self.journal.create_job(self.original, self.output, 2)
+        second_job = self.journal.create_job(
+            self.original, self.root / "second-output.pdf", 1
+        )
+        self.journal.set_state(first_job, "running")
+        self.journal.set_state(second_job, "running")
+        artifact = self.root / "checkpoint-page.txt"
+        alias = self.root / "checkpoint-page-hardlink.txt"
+        artifact.write_text("immutable checkpoint bytes", encoding="utf-8")
+        try:
+            os.link(artifact, alias)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"hard links unavailable on this filesystem: {exc}")
+
+        self.journal.checkpoint(first_job, 0, "ocr", artifact)
+        with self.assertRaisesRegex(JobSafetyError, "file identity"):
+            self.journal.checkpoint(first_job, 1, "ocr", alias)
+        with self.assertRaisesRegex(JobSafetyError, "file identity"):
+            self.journal.checkpoint(second_job, 0, "ocr", alias)
+        self.assertEqual(self.journal.resumable_pages(first_job, "ocr"), [0])
+        self.assertEqual(self.journal.resumable_pages(second_job, "ocr"), [])
 
     def test_create_job_rejects_source_mutation_during_digest_without_journaling(self):
         original = self.original.read_bytes()
