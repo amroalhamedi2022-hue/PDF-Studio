@@ -10,7 +10,7 @@ from pdfstudio.page_tools import (PageToolError, _publish, crop_pages, delete_pa
                                   merge_pdfs, reorder_pages, rotate_pages, split_pdf, split_pdf_by_bookmarks,
                                   split_pdf_by_size)
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import DictionaryObject, NameObject
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 
 class PageToolsTests(unittest.TestCase):
@@ -34,6 +34,36 @@ class PageToolsTests(unittest.TestCase):
             w._root_object[NameObject('/Perms')] = DictionaryObject({NameObject('/DocMDP'): DictionaryObject()})
         with path.open('wb') as fh:
             w.write(fh)
+
+    def write_text_file(self, path, texts):
+        """Create a tiny born-digital PDF with a real extractable text layer."""
+        writer = PdfWriter()
+        for index, text in enumerate(texts):
+            page = writer.add_blank_page(width=300 + index, height=700)
+            font = DictionaryObject({
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+            })
+            font_ref = writer._add_object(font)
+            page[NameObject("/Resources")] = DictionaryObject({
+                NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})
+            })
+            content = DecodedStreamObject()
+            content.set_data(f"BT /F1 12 Tf 72 650 Td ({text}) Tj ET".encode("ascii"))
+            page[NameObject("/Contents")] = writer._add_object(content)
+        with path.open("wb") as stream:
+            writer.write(stream)
+
+    def test_extract_preserves_native_text_and_page_order(self):
+        source = self.root / "text-order.pdf"
+        self.write_text_file(source, ["alpha page", "beta page", "gamma page"])
+        original_sha = sha256_file(source)
+        extract_pages(source, self.out, [2, 0, 1])
+        with self.out.open("rb") as stream:
+            actual = [page.extract_text().strip() for page in PdfReader(stream).pages]
+        self.assertEqual(actual, ["gamma page", "alpha page", "beta page"])
+        self.assertEqual(sha256_file(source), original_sha)
 
     def test_extract_custom_order_without_mutating_source(self):
         before = self.a.read_bytes()
@@ -428,6 +458,34 @@ class PageToolsTests(unittest.TestCase):
             split_pdf_by_size(self.a, out_dir, max_part_bytes=1024, base_name="sized")
         self.assertEqual((out_dir / "sized-part-001.pdf").read_bytes(), sentinel)
         self.assertEqual(list(out_dir.glob(".pdfstudio-size-probe-*")), [])
+
+    def test_publish_rejects_serialized_native_text_loss(self):
+        source = self.root / "text-integrity-source.pdf"
+        self.write_text_file(source, ["preserve this text"])
+        with source.open("rb") as stream:
+            expected_writer = PdfWriter()
+            expected_writer.add_page(PdfReader(stream).pages[0])
+        self.assertEqual(expected_writer.pages[0].extract_text().strip(), "preserve this text")
+
+        class TextDroppingWriter:
+            @property
+            def pages(self):
+                return expected_writer.pages
+
+            def write(self, output_stream):
+                blank_writer = PdfWriter()
+                blank_writer.add_blank_page(width=300, height=700)
+                blank_writer.write(output_stream)
+
+        staging = self.root / "text-loss-staging.pdf"
+        staging.write_bytes(b"reserved")
+        with self.assertRaisesRegex(PageToolError, "text layer mismatch on page 1"):
+            _publish(
+                TextDroppingWriter(), staging, (source,), (sha256_file(source),),
+                1024 * 1024, expected_pages=1,
+            )
+        self.assertFalse(staging.exists())
+        self.assertEqual(PdfReader(source).pages[0].extract_text().strip(), "preserve this text")
 
     def test_publish_preserves_replacement_path_when_writer_fails(self):
         staging = self.root / "raced-staging.pdf"

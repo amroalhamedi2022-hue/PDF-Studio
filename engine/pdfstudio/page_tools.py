@@ -7,6 +7,7 @@ no-clobber publication to the parent process.
 
 from __future__ import annotations
 
+import hashlib
 import math
 import os
 import re
@@ -119,6 +120,21 @@ class _CappedWriter:
         return getattr(self._stream, name)
 
 
+def _page_text_digest(page) -> str | None:
+    """Fingerprint extractable native text without retaining whole-document text.
+
+    Empty/image-only pages and pages the parser cannot extract are left
+    unverified; this is a preservation check, not OCR or signature validation.
+    """
+    try:
+        text = page.extract_text()
+    except Exception:
+        return None
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
              digests: tuple[str, ...], max_output_bytes: int, *,
              expected_pages: int) -> None:
@@ -149,6 +165,9 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
         if (not stat.S_ISREG(opened_info.st_mode)
                 or (opened_info.st_dev, opened_info.st_ino) != expected_identity):
             raise PageToolError("PDF staging identity changed before writing")
+
+        # Capture only per-page digests; never retain extracted document text.
+        expected_text_digests = tuple(_page_text_digest(page) for page in writer.pages)
 
         with os.fdopen(fd, "r+b") as fh:
             fd = -1  # fdopen now owns the descriptor
@@ -186,7 +205,11 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
                 raise PageToolError("generated PDF has no valid PDF header")
             validation_stream.seek(0)
             try:
-                actual_pages = len(PdfReader(validation_stream, strict=False).pages)
+                validated_reader = PdfReader(validation_stream, strict=False)
+                actual_pages = len(validated_reader.pages)
+                actual_text_digests = tuple(
+                    _page_text_digest(page) for page in validated_reader.pages
+                )
             except Exception as exc:
                 raise PageToolError("generated PDF failed structural validation") from exc
             after_validation = os.fstat(validation_stream.fileno())
@@ -203,6 +226,14 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
             raise PageToolError(
                 f"generated PDF page count mismatch: expected {expected_pages}, got {actual_pages}"
             )
+        if len(expected_text_digests) != actual_pages:
+            raise PageToolError("generated PDF text verification page count mismatch")
+        for index, (expected_text, actual_text) in enumerate(
+                zip(expected_text_digests, actual_text_digests)):
+            if expected_text is not None and actual_text != expected_text:
+                raise PageToolError(
+                    f"generated PDF text layer mismatch on page {index + 1}"
+                )
         if any(sha256_file(src) != digest for src, digest in zip(sources, digests)):
             raise PageToolError("source changed during PDF operation")
     except BaseException:
