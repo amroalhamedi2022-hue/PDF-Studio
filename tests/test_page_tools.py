@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 from pdfstudio.jobs import sha256_file
 from pdfstudio.page_tools import (PageToolError, _publish, crop_pages, delete_pages, extract_pages,
-                                  merge_pdfs, reorder_pages, rotate_pages, split_pdf, split_pdf_by_bookmarks)
+                                  merge_pdfs, reorder_pages, rotate_pages, split_pdf, split_pdf_by_bookmarks,
+                                  split_pdf_by_size)
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DictionaryObject, NameObject
 
@@ -343,6 +344,60 @@ class PageToolsTests(unittest.TestCase):
         self.assertFalse((out_dir / "report-part-001.pdf").exists())
         self.assertFalse((out_dir / "report-part-002.pdf").exists())
 
+
+    def test_split_pdf_by_size_respects_cap_order_and_source_integrity(self):
+        source = self.root / "size-source.pdf"
+        self.write_file(source, [300, 300, 300, 300, 300, 300])
+        before = source.read_bytes()
+        probe_dir = self.root / "single-page-probes"
+        probe_dir.mkdir()
+        extract_pages(source, probe_dir / "single.pdf", [0])
+        one_page_bytes = (probe_dir / "single.pdf").stat().st_size
+        target_bytes = one_page_bytes + 16
+        out_dir = self.root / "size-parts"
+        out_dir.mkdir()
+
+        outputs = split_pdf_by_size(
+            source, out_dir, max_part_bytes=target_bytes, base_name="sized",
+        )
+
+        self.assertGreater(len(outputs), 1)
+        self.assertLessEqual(len(outputs), 6)
+        self.assertEqual(source.read_bytes(), before)
+        actual_widths = []
+        for output in outputs:
+            self.assertLessEqual(output.stat().st_size, target_bytes)
+            with output.open("rb") as stream:
+                actual_widths.extend(float(page.mediabox.width) for page in PdfReader(stream).pages)
+        self.assertEqual(actual_widths, [300.0] * 6)
+        self.assertEqual(list(out_dir.glob(".pdfstudio-size-probe-*")), [])
+        self.assertEqual(list(out_dir.glob(".pdfstudio-split-*")), [])
+        self.assertEqual(list(out_dir.glob(".pdfstudio-stage-*")), [])
+
+    def test_split_pdf_by_size_rejects_single_page_over_cap_without_outputs(self):
+        out_dir = self.root / "too-small-size-parts"
+        out_dir.mkdir()
+        before = self.a.read_bytes()
+        with self.assertRaisesRegex(PageToolError, "cannot be processed within the configured size limits"):
+            split_pdf_by_size(
+                self.a, out_dir, max_part_bytes=5, max_total_output_bytes=1024,
+                base_name="tiny", free_space_margin_bytes=0,
+            )
+        self.assertEqual(self.a.read_bytes(), before)
+        self.assertEqual(list(out_dir.iterdir()), [])
+
+    def test_split_pdf_by_size_validates_caps_and_no_clobber(self):
+        out_dir = self.root / "invalid-size-parts"
+        out_dir.mkdir()
+        for cap in (0, 4, True, 1.5, "1024"):
+            with self.subTest(cap=cap), self.assertRaises(ValueError):
+                split_pdf_by_size(self.a, out_dir, max_part_bytes=cap)
+        sentinel = b"keep existing part"
+        (out_dir / "sized-part-001.pdf").write_bytes(sentinel)
+        with self.assertRaises(FileExistsError):
+            split_pdf_by_size(self.a, out_dir, max_part_bytes=1024, base_name="sized")
+        self.assertEqual((out_dir / "sized-part-001.pdf").read_bytes(), sentinel)
+        self.assertEqual(list(out_dir.glob(".pdfstudio-size-probe-*")), [])
 
     def test_publish_preserves_replacement_path_when_writer_fails(self):
         staging = self.root / "raced-staging.pdf"
