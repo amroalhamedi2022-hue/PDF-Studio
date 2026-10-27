@@ -567,3 +567,29 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 **NOT TESTED / remaining in B01:** split by target byte size; a more efficient single-pass multi-part split; Android/Windows page-tool UI and visual acceptance; realistic large/scanned PDFs including >=2 GiB where resources permit; OCR Arabic/English; crash/reboot during multi-output publication; device acceptance and hostile-PDF sandboxing. Keep B01 OPEN and do not start B02 until the remaining B01 gates have evidence.
 
 **Google Drive handoff:** **FAILED / NOT AVAILABLE**. This runtime exposes no Google Docs/Drive write connector, so the specified `PDF Studio — HANDOFF` document was not updated. No sync success is claimed; development continues.
+
+## 2026-10-27 — B01 staged-output integrity gate (PASS; milestone remains OPEN)
+
+**Active milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity`.
+
+### Production change
+- `_publish()` now reopens every staged PDF with the pinned pypdf parser before publication, checks the PDF header and readable page tree, and verifies the exact expected page count.
+- The contract is applied to extraction, merge, rotation, CropBox crop, deletion and reorder. A malformed output or page-count mismatch fails closed; the staging file is removed and source SHA verification remains mandatory.
+- This is structural/page-count validation only. It does not prove OCR text accuracy, visual fidelity, preservation of every content stream, or secure redaction.
+
+### Regression evidence
+- Added tests for a structurally valid one-page PDF supplied where two pages were expected, and for malformed PDF bytes. Both require staging cleanup and unchanged source.
+- Updated the injected ENOSPC regression to pass the new expected-page contract; the initial CI failure was a test helper missing that required argument, not a production regression.
+- Exact production/test checkpoint: `6126c6e035cc640fa9d986526d0194c91a955f3d`.
+- GitHub Actions [#40443505192](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40443505192): **PASS** on Ubuntu and Windows. Each host ran 159 tests; Ubuntu skipped four Windows-only tests. Syntax checks passed.
+- 64 MiB disk-backed synthetic extraction: **PASS** on both hosts; input 67,109,445 bytes, output 67,109,392 bytes, one output page, source SHA unchanged, zero staging leftovers.
+- Linux synthetic 5,000-page checkpoint/crash/resume/FTS integration: **PASS**. The 2,638,282-byte born-digital PDF was interrupted after 2,500 durable checkpoints; resume processed the remaining 2,500, then verified all 5,000 artifacts on the reuse pass. FTS integrity and source SHA checks passed. Indexing 3.104 s; resume 6.934 s; completed-stage reuse 1.216 s; checkpoint FTS indexing 0.932 s. Parent/max-child RSS high-water marks were 52.92/53.95 MiB (separate measures, not summed).
+- Windows 100-page native-text smoke: **PASS**, 0.294 s indexing; Windows RSS is not measured by this benchmark.
+
+### B01 milestone acceptance and remaining gates
+- **PASS:** cross-platform source suite, structural/page-count validation for all six direct page operations, no-clobber/cleanup regressions, synthetic 100-page smoke on both hosts, 64 MiB disk-backed smoke on both hosts, Linux 1,000/5,000-page synthetic checkpoint/resume/FTS checks.
+- **IN PROGRESS:** complete F08.01 page-operation acceptance; split by target byte size and a more efficient single-pass multi-part split; end-to-end output text-layer/page-order checks; realistic scanned and >=2 GiB corpus where resources permit; genuine disk-pressure contention; crash/reboot during multi-output publication.
+- **NOT TESTED:** Arabic/English OCR and searchable overlays, Android SAF/native UI, Windows GUI/EXE, Xiaomi Pad 5 behavior, visual rendering, hostile-PDF OS sandbox, and full F01–F10 product acceptance. Synthetic born-digital results are not substitutes for these gates.
+- **Build decision:** no APK/EXE build. This change is in the Python processing engine and the question is output parseability/page-count correctness; the exact cross-platform source suite directly exercises it. Packaging would not add evidence for this contract.
+- **Google Drive `PDF Studio — HANDOFF` sync: FAILED / NOT AVAILABLE.** This runtime exposes no Google Docs/Drive write connector, so the specified document was not updated. No sync success is claimed.
+- **Next:** continue B01 and close its remaining source/resource gates before opening B02. Keep PR #2 draft/open; do not merge or modify `main`.
