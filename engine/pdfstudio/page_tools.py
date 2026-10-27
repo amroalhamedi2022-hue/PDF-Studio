@@ -20,7 +20,7 @@ from typing import Iterable
 from pypdf import PdfReader, PdfWriter
 
 from .page_ranges import PageRangeError, parse_page_ranges
-from .inspection import DocumentInspectionError, inspect_top_level_bookmark_starts
+from .inspection import DocumentInspectionError, inspect_pdf, inspect_top_level_bookmark_starts
 from .jobs import sha256_file
 
 
@@ -767,6 +767,137 @@ def split_pdf(source: str | Path, output_dir: str | Path,
         # A staging failure occurs before publication and leaves no final outputs.
         # Publication failures are rolled back inside the staging-directory scope.
         raise
+
+def split_pdf_by_size(source: str | Path, output_dir: str | Path, *,
+                      max_part_bytes: int,
+                      base_name: str = "split",
+                      timeout_seconds: float = 90.0, max_memory_mb: int = 768,
+                      max_pages: int = 10000,
+                      max_total_output_bytes: int = 1024 * 1024 * 1024,
+                      free_space_margin_bytes: int = 16 * 1024 * 1024) -> tuple[Path, ...]:
+    """Split in page order so each published part fits a byte ceiling.
+
+    Page boundaries are indivisible: a single page that cannot be serialized
+    within the remaining per-part/aggregate cap fails closed. Candidate ranges
+    are tested in the existing isolated worker with binary search; only after
+    every boundary is planned and the source SHA is rechecked does the existing
+    staged, no-clobber multi-part publisher create caller-visible outputs.
+    The 100-part cap, per-worker resource limits, source fingerprint checks,
+    rollback rules and final structural/page-count validation are preserved.
+    Size probes are bounded by max_pages and by the resulting 100-part limit,
+    but they can re-read/serialize candidate ranges more than once. This is not
+    a single-pass streaming splitter.
+    """
+    if (not isinstance(max_part_bytes, int) or isinstance(max_part_bytes, bool)
+            or max_part_bytes < 5):
+        raise ValueError("max_part_bytes must be an integer of at least 5 bytes")
+    if (not isinstance(max_total_output_bytes, int)
+            or isinstance(max_total_output_bytes, bool) or max_total_output_bytes < 5):
+        raise ValueError("max_total_output_bytes must be an integer of at least 5 bytes")
+    if (not isinstance(base_name, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", base_name) is None):
+        raise PageToolError("base_name must be 1-80 ASCII letters, digits, underscores or hyphens")
+    if (not isinstance(free_space_margin_bytes, int)
+            or isinstance(free_space_margin_bytes, bool) or free_space_margin_bytes < 0):
+        raise ValueError("free_space_margin_bytes must be a non-negative integer")
+
+    raw_directory = Path(output_dir)
+    if raw_directory.is_symlink():
+        raise PageToolError("split output directory must not be a symlink")
+    directory = raw_directory.resolve(strict=True)
+    if not directory.is_dir():
+        raise PageToolError("split output path must be an existing directory")
+    # Every valid split has part 001; reject the common no-clobber conflict
+    # before spending time in isolated size probes. split_pdf checks every
+    # final target again after the exact part count is known.
+    if os.path.lexists(directory / f"{base_name}-part-001.pdf"):
+        raise FileExistsError("one or more split output files already exist")
+
+    src = _validated_source(source)
+    try:
+        inspection = inspect_pdf(
+            src, sample_limit=0, timeout_seconds=timeout_seconds,
+            max_memory_mb=max_memory_mb, max_pages=max_pages,
+        )
+    except DocumentInspectionError as exc:
+        raise PageToolError("size split could not safely inspect the PDF") from exc
+    page_count = inspection.page_count
+    if page_count is None:
+        raise PageToolError("encrypted PDF requires a separate authorized unlock workflow")
+    if page_count < 1 or page_count > max_pages:
+        raise PageToolError("page count is outside the configured split limit")
+    source_digest = inspection.sha256
+
+    groups: list[str] = []
+    selected_bytes = 0
+    start = 0
+    with tempfile.TemporaryDirectory(prefix=".pdfstudio-size-probe-", dir=directory) as probe_name:
+        probe_dir = Path(probe_name)
+        probe_number = 0
+        while start < page_count:
+            if len(groups) >= 100:
+                raise PageToolError("size split exceeds the configured 100-part limit")
+            remaining_bytes = max_total_output_bytes - selected_bytes
+            if remaining_bytes < 5:
+                raise PageToolError("size split exceeds the configured aggregate output byte limit")
+            part_cap = min(max_part_bytes, remaining_bytes)
+            low, high = start, page_count - 1
+            best_end: int | None = None
+            best_size: int | None = None
+            single_page_error: PageToolError | None = None
+
+            while low <= high:
+                middle = (low + high) // 2
+                candidate = probe_dir / f"probe-{probe_number:05d}.pdf"
+                probe_number += 1
+                try:
+                    extract_pages(
+                        src, candidate, f"{start + 1}-{middle + 1}",
+                        timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+                        max_pages=max_pages, max_output_bytes=part_cap,
+                        free_space_margin_bytes=free_space_margin_bytes,
+                    )
+                    candidate_info = candidate.lstat()
+                    if not stat.S_ISREG(candidate_info.st_mode) or candidate_info.st_size < 5:
+                        raise PageToolError("size probe produced an invalid PDF part")
+                    if candidate_info.st_size <= part_cap:
+                        best_end, best_size = middle, candidate_info.st_size
+                        low = middle + 1
+                    else:
+                        high = middle - 1
+                except PageToolError as exc:
+                    # The isolated writer deliberately returns a generic error
+                    # for parser/resource failures. Treat a larger range as
+                    # non-fitting, but if even one page fails, preserve the
+                    # failure as the cause instead of silently dropping pages.
+                    if middle == start:
+                        single_page_error = exc
+                    high = middle - 1
+                finally:
+                    try:
+                        candidate.unlink()
+                    except FileNotFoundError:
+                        pass
+
+            if best_end is None or best_size is None:
+                raise PageToolError(
+                    f"page {start + 1} cannot be processed within the configured size limits"
+                ) from single_page_error
+            groups.append(f"{start + 1}-{best_end + 1}")
+            selected_bytes += best_size
+            start = best_end + 1
+
+    if sha256_file(src) != source_digest:
+        raise PageToolError("source changed during size split planning")
+    return split_pdf(
+        src, directory, groups, base_name=base_name,
+        timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
+        max_pages=max_pages, max_output_bytes=max_part_bytes,
+        max_total_output_bytes=max_total_output_bytes,
+        free_space_margin_bytes=free_space_margin_bytes,
+        _expected_source_sha256=source_digest,
+    )
+
 
 def split_pdf_by_bookmarks(source: str | Path, output_dir: str | Path, *,
                            base_name: str = "split",
