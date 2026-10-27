@@ -3,9 +3,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pdfstudio.page_tools import (PageToolError, crop_pages, delete_pages, extract_pages,
-                                  merge_pdfs, reorder_pages, rotate_pages, split_pdf)
+                                  merge_pdfs, reorder_pages, rotate_pages, split_pdf, split_pdf_by_bookmarks)
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import DictionaryObject, NameObject
 
@@ -250,6 +251,51 @@ class PageToolsTests(unittest.TestCase):
                 split_pdf(self.a, out_dir, ["1"], base_name=name)
         with self.assertRaises(PageToolError):
             split_pdf(self.a, out_dir, [["0"]] * 101, base_name="many")
+        self.assertEqual(list(out_dir.iterdir()), [])
+
+    def test_split_pdf_by_top_level_bookmarks_keeps_preface_and_ignores_nested_items(self):
+        writer = PdfWriter()
+        for width in (300, 400, 500, 600, 700):
+            writer.add_blank_page(width=width, height=700)
+        chapter_one = writer.add_outline_item("Chapter One", 1)
+        writer.add_outline_item("Nested section", 2, parent=chapter_one)
+        writer.add_outline_item("Chapter Two", 3)
+        with self.a.open("wb") as stream:
+            writer.write(stream)
+        before = self.a.read_bytes()
+        out_dir = self.root / "bookmark-parts"
+        out_dir.mkdir()
+
+        outputs = split_pdf_by_bookmarks(self.a, out_dir, base_name="chapters")
+
+        self.assertEqual([p.name for p in outputs], [
+            "chapters-part-001.pdf", "chapters-part-002.pdf", "chapters-part-003.pdf"
+        ])
+        actual = []
+        for output in outputs:
+            with output.open("rb") as stream:
+                actual.append([float(page.mediabox.width) for page in PdfReader(stream).pages])
+        self.assertEqual(actual, [[300.0], [400.0, 500.0], [600.0, 700.0]])
+        self.assertEqual(before, self.a.read_bytes())
+        self.assertEqual(list(out_dir.glob(".pdfstudio-split-*")), [])
+        self.assertEqual(list(out_dir.glob(".pdfstudio-stage-*")), [])
+
+    def test_split_pdf_by_bookmarks_rejects_missing_outline_without_outputs(self):
+        out_dir = self.root / "no-bookmarks"
+        out_dir.mkdir()
+        with self.assertRaises(PageToolError):
+            split_pdf_by_bookmarks(self.a, out_dir, base_name="chapters")
+        self.assertEqual(list(out_dir.iterdir()), [])
+
+    def test_split_pdf_by_bookmarks_rejects_source_changed_after_outline_plan(self):
+        out_dir = self.root / "stale-bookmark-plan"
+        out_dir.mkdir()
+        with patch(
+            "pdfstudio.page_tools.inspect_top_level_bookmark_starts",
+            return_value=(3, (0,), "0" * 64),
+        ):
+            with self.assertRaisesRegex(PageToolError, "source changed after bookmark split planning"):
+                split_pdf_by_bookmarks(self.a, out_dir, base_name="chapters")
         self.assertEqual(list(out_dir.iterdir()), [])
 
     def test_split_pdf_bounds_infinite_group_iterable(self):
