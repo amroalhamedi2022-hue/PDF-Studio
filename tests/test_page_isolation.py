@@ -181,9 +181,11 @@ class IsolatedPageToolTests(unittest.TestCase):
         patch_target = ("pdfstudio.page_isolation.os.posix_fallocate"
                         if os.name == "posix" else "pdfstudio.page_isolation.os.ftruncate")
 
-        def replace_path_then_fail(*_args):
-            # The reservation descriptor still references the original inode,
-            # while the path now names a different file.
+        def replace_path_then_fail(fd, *_args):
+            # Close the injected descriptor so the same deterministic race
+            # fixture works on Windows, where renaming an open file may fail.
+            # The failure handler must tolerate this and preserve the new path.
+            os.close(fd)
             staged.rename(moved)
             staged.write_bytes(sentinel)
             raise OSError(errno.ENOSPC, "simulated disk full after path replacement")
