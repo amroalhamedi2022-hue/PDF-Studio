@@ -351,8 +351,12 @@ def inspect_top_level_bookmark_starts(
 
     try:
         before = fingerprint(src)
-        source_digest = sha256_file(src)
+        source_digest = sha256_file_before_deadline(src, deadline)
         after = fingerprint(src)
+    except TimeoutError as exc:
+        raise DocumentInspectionError(
+            "isolated bookmark inspection timed out during source verification"
+        ) from exc
     except OSError as exc:
         raise DocumentInspectionError("PDF became unreadable during bookmark preflight") from exc
     if before != after:
@@ -407,8 +411,12 @@ def inspect_top_level_bookmark_starts(
             raise DocumentInspectionError("bookmark worker did not exit cleanly")
         try:
             current_before = fingerprint(src)
-            current_digest = sha256_file(src)
+            current_digest = sha256_file_before_deadline(src, deadline)
             current_after = fingerprint(src)
+        except TimeoutError as exc:
+            raise DocumentInspectionError(
+                "isolated bookmark inspection timed out during source verification"
+            ) from exc
         except OSError as exc:
             raise DocumentInspectionError("PDF changed during bookmark inspection") from exc
         if current_before != current_after or current_after != after or current_digest != source_digest:
