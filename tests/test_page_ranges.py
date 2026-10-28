@@ -44,6 +44,14 @@ class PageRangeTests(unittest.TestCase):
     def test_whitespace_and_single_page(self):
         self.assertEqual(parse_page_ranges(" 2 , 3- ", 4), (1, 2, 3))
 
+    def test_oversized_decimal_endpoints_fail_with_public_error_type(self):
+        huge = "9" * 5000
+        for spec in (huge, "1-" + huge):
+            with self.subTest(endpoint=spec[:8]), self.assertRaises(PageRangeError):
+                parse_page_ranges(spec, 3)
+        # Leading zeroes were accepted before the hardening and remain valid.
+        self.assertEqual(parse_page_ranges("0002", 3), (1,))
+
 
 class PdfExtractionRangeTests(unittest.TestCase):
     def setUp(self):
