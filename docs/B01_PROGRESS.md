@@ -913,3 +913,16 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Acceptance remains partial:** real Arabic/English OCR, realistic >=2 GiB scans, OS-reboot recovery, hostile-input OS sandbox, Android SAF/UI/device, Windows GUI/EXE/device, and full F01–F10 remain NOT TESTED. Synthetic scale tests are not substitutes for these gates.
 - **Google Drive Handoff:** sync remains FAILED / NOT AVAILABLE in this runtime because no Google Docs/Drive write connector is exposed; the specified Drive document was not updated.
 - No merge, auto-merge, `main` changes, paid tools/runners, user PDFs or secrets.
+
+
+## 2026-10-28 — avoid check-then-unlink in PDF publication failure (B01 remains OPEN / PARTIAL)
+
+- **Risk addressed:** checking the destination inode and then calling `unlink()` by pathname is not atomic. A concurrent same-user process can replace the destination after the check, causing cleanup to delete a file that belongs to another operation.
+- **Production fix:** [`be93162798fbd89fbc3b3254c8659f8250401f99`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/be93162798fbd89fbc3b3254c8659f8250401f99) removes caller-visible destination deletion from post-publication verification failures. The operation fails closed and explicitly reports that a destination may remain unverified; it must not be presented as a successful export.
+- **Regression test:** [`d5a34a2d39b7f560fc65d86ab4e9cf4de2e5709d`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/d5a34a2d39b7f560fc65d86ab4e9cf4de2e5709d) asserts failed publication never calls `unlink` on the caller-visible output path, and that an output implicated in a hard-link alias failure remains explicitly unverified rather than being destructively cleaned up. The first Windows test-hook attempt did not intercept the concrete Windows path implementation; the final regression uses a portable unlink guard.
+- **Exact final source/test CI:** [run #40735196677 — PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40735196677), **195 tests on Ubuntu and 195 on Windows**; Ubuntu skips six platform-specific cases. Both hosts passed syntax, 100-page smoke and 64 MiB disk-backed extraction. Linux additionally passed 1,000-page and 5,000-page synthetic checkpoint/crash/resume/FTS checks.
+- **Evidence boundary:** the 5,000-page fixture is a 2.64 MB born-digital synthetic PDF, not OCR or a realistic >=2 GiB scanned corpus. This does not prove resistance to every same-user race, OS sandboxing, OS-reboot recovery, Arabic/English OCR, Android SAF/UI/device, or Windows GUI/EXE/device acceptance.
+- **Build decision:** no APK/EXE; the changed contract is Python filesystem cleanup and is directly tested on both host OSes.
+- **Acceptance:** B01 remains OPEN / PARTIAL; B02 remains closed. F04.05/F08.01 and full F01–F10 acceptance are not declared PASS from this fix alone.
+- **Google Drive `PDF Studio — HANDOFF`: FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The specified document was not updated; no sync success is claimed.
+- No merge, auto-merge, `main` changes, paid tools/runners, user PDFs, or secrets.
