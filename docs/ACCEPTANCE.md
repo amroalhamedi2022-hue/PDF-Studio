@@ -197,3 +197,16 @@ B01 remains **OPEN / PARTIAL**; B02 remains closed. Google Drive `PDF Studio —
 - **Acceptance unchanged:** real Arabic/English OCR, realistic >=2 GiB scans, OS-reboot recovery, hostile-PDF OS sandboxing, Android SAF/UI/device, Windows GUI/EXE/device, and complete F01–F10 remain **NOT TESTED**. F04.03 remains IN PROGRESS; B01 remains OPEN / PARTIAL; B02 stays closed.
 - **Google Drive Handoff:** sync is **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The specified PDF Studio HANDOFF document was not updated; no sync success is claimed.
 - No paid APIs/runners, user PDFs, secrets, merge, auto-merge or main changes.
+
+
+## 2026-10-28 — reject dangling output symlinks during job reservation (B01 remains OPEN / PARTIAL)
+
+- **Milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity` remains **OPEN / PARTIAL**; B02 remains closed.
+- **Defect:** `JobJournal.create_job()` canonicalized an output path and used `Path.exists()`, which follows links and reports a dangling symlink as absent. A link added after reservation could also evade `worker_session()`'s final-output check.
+- **Production + regression commit:** [`e822bd603c25170fdb12e9c42c9fb171dd6455b5`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/e822bd603c25170fdb12e9c42c9fb171dd6455b5). The journal now uses `lstat()` on the caller-supplied destination before/after canonicalization and again inside the SQLite reservation transaction; it rejects symlink/reparse entries both at creation and immediately before a worker claims a job.
+- **Regression cases:** `test_create_job_rejects_broken_output_symlink_without_journaling` verifies that a dangling link creates no job and does not create its target; `test_worker_session_rejects_output_symlink_added_after_reservation` verifies the pending job remains pending and the target stays absent.
+- **Exact CI:** [run #40671338057 — PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40671338057), **189 tests on Windows and 189 on Ubuntu** (Ubuntu skips six platform-specific cases). Syntax and source suites passed; 100-page and 64 MiB disk-backed checks passed on both hosts; Linux 1,000-page and 5,000-page checkpoint/resume/FTS checks passed.
+- **Evidence boundary:** the 5,000-page test uses a 2.64 MB generated born-digital PDF, not OCR or a realistic >=2 GiB scanned document. Real Arabic/English OCR, OS-reboot recovery, hostile-input OS sandbox, Android SAF/UI/device, Windows GUI/EXE/device and full F01–F10 acceptance remain **NOT TESTED**. F04.03 remains IN PROGRESS.
+- **Build decision:** no APK/EXE build; the changed Python filesystem/no-clobber contract is directly exercised by cross-platform source tests, and packaging would not answer a stronger question.
+- **Google Drive Handoff:** **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The specified `PDF Studio — HANDOFF` document was not updated; no sync success is claimed.
+- No merge, auto-merge, `main` edits, paid APIs/runners, user PDFs or secrets.
