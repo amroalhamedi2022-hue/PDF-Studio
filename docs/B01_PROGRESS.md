@@ -807,3 +807,18 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Acceptance still NOT TESTED:** real Arabic/English OCR and searchable overlay, realistic >=2 GiB scanned PDFs, OS-reboot recovery, hostile-PDF OS sandbox, Android SAF/UI/APK/device, Windows GUI/EXE/device, and complete F01–F10 acceptance. B01 remains OPEN / PARTIAL; B02 remains closed.
 - **Google Drive Handoff:** `PDF Studio — HANDOFF` remains **FAILED / NOT AVAILABLE** because no Google Docs/Drive write connector is exposed in this runtime. The specified Drive document was not updated; no sync success is claimed.
 - No paid tools/runners, private user PDFs, secrets, merge, auto-merge or `main` changes.
+
+
+## 2026-10-28 follow-up — inspection deadline includes worker startup (B01 remains OPEN)
+
+- **Milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity` remains **OPEN / PARTIAL**; B02 stays closed.
+- **Risk addressed:** `inspect_pdf(timeout_seconds=...)` previously started its deadline only after `Process.start()` and Windows Job Object assignment, so slow worker startup could exceed the caller's wall-clock budget before timing began.
+- **Production fix:** deadline is now established before process creation. Remaining time is checked immediately after spawn/Job Object assignment, before waiting for the child, and after the post-parse source SHA-256 integrity check. Expired operations fail closed with `DocumentInspectionError("isolated PDF inspection timed out")`; source bytes remain read-only.
+- **Regression:** `test_timeout_includes_worker_process_startup` delays `SpawnProcess.start()` by 50 ms while configuring a 10 ms budget, then requires a timeout and unchanged source bytes. This verifies the startup interval consumes the same budget.
+- **Commits:** production [`08b0fe7980720fbefc958eecb3e5e69043457736`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/08b0fe7980720fbefc958eecb3e5e69043457736); regression test [`2e63a414ef2eb94c81f2e0d968cf9f69a1349aac`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/2e63a414ef2eb94c81f2e0d968cf9f69a1349aac).
+- **Exact CI:** [run #40634167667 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40634167667), Ubuntu + Windows, **180 tests per host**; Ubuntu skips six Windows/platform-specific cases. Duplicate [run #40634161340 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40634161340) also completed on the same code/test head.
+- **Existing bounded-workload evidence:** 100-page and 64 MiB disk-backed extraction passed on both hosts; Linux 1,000-page and 5,000-page abrupt-process checkpoint/resume/FTS checks passed. The 5,000-page fixture is 2.64 MB synthetic born-digital text, not OCR or a realistic >=2 GiB scanned PDF.
+- **Build decision:** no APK/EXE build. The changed contract is Python worker timing and is directly exercised on both target host OSes; packaging would not answer a stronger question.
+- **Still NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scans, OS-reboot recovery, hostile-PDF OS sandboxing, Android SAF/UI/device, Windows GUI/EXE/device, and full F01–F10 acceptance. F04.03 remains IN PROGRESS; B01 remains OPEN / PARTIAL.
+- **Google Drive Handoff:** `PDF Studio — HANDOFF` sync remains **FAILED / NOT AVAILABLE** because this runtime has no Google Docs/Drive write connector. The specified Drive document was not updated; no sync success is claimed.
+- No paid tools/runners, private user PDFs, secrets, merge, auto-merge, or `main` changes.
