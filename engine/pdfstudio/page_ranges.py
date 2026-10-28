@@ -16,6 +16,16 @@ class PageRangeError(ValueError):
     """Invalid user-facing page selection; no output should be written."""
 
 
+def _page_range_label(page_count: int) -> str:
+    """Format bounds without leaking Python's huge-int string conversion error."""
+    try:
+        return f"1..{page_count}"
+    except ValueError:
+        # Python limits int-to-decimal conversion by default. An invalid page
+        # selection must still raise our documented public exception type.
+        return "the supported page range"
+
+
 def _parse_endpoint(digits: str, page_count: int) -> int:
     """Parse one decimal endpoint without constructing an unbounded Python int.
 
@@ -32,13 +42,13 @@ def _parse_endpoint(digits: str, page_count: int) -> int:
         # the API fail-closed below if Python also refuses this endpoint.
         page_count_digits = ""
     if page_count_digits and len(normalized) > len(page_count_digits):
-        raise PageRangeError(f"page outside 1..{page_count}")
+        raise PageRangeError(f"page outside {_page_range_label(page_count)}")
     try:
         value = int(normalized)
     except ValueError as exc:
         raise PageRangeError("page number is too large or invalid") from exc
     if value > page_count:
-        raise PageRangeError(f"page outside 1..{page_count}")
+        raise PageRangeError(f"page outside {_page_range_label(page_count)}")
     return value
 
 
@@ -76,7 +86,7 @@ def parse_page_ranges(spec: str, page_count: int, *, max_selections: int = 10000
         end_text = match.group(2)
         end = (_parse_endpoint(end_text, page_count) if end_text else page_count) if end_text is not None else start
         if start < 1 or end < 1:
-            raise PageRangeError(f"page outside 1..{page_count}")
+            raise PageRangeError(f"page outside {_page_range_label(page_count)}")
         step = 1 if end >= start else -1
         range_size = abs(end - start) + 1
         if len(selected) + range_size > max_selections:

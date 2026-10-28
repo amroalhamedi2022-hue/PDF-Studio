@@ -53,6 +53,15 @@ class PageRangeTests(unittest.TestCase):
         self.assertEqual(parse_page_ranges("0002", 3), (1,))
 
 
+    def test_extreme_page_count_keeps_public_error_contract(self):
+        # This is not a realistic PDF page count; it protects the public parser
+        # from leaking ValueError if an external caller supplies an extreme int.
+        huge_page_count = 10 ** 5000
+        for spec in ("0", "1-0"):
+            with self.subTest(spec=spec), self.assertRaises(PageRangeError):
+                parse_page_ranges(spec, huge_page_count)
+
+
 class PdfExtractionRangeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
