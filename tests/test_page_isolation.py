@@ -323,7 +323,7 @@ class IsolatedPageToolTests(unittest.TestCase):
             return real_link(staged, destination)
 
         with mock.patch("pdfstudio.page_isolation.os.link", side_effect=replace_staging_then_link):
-            with self.assertRaisesRegex(PageToolError, "published PDF identity changed"):
+            with self.assertRaisesRegex(PageToolError, "published PDF identity (changed|or hard-link count changed)"):
                 extract_pages(self.a, self.out, "1")
 
         self.assertFalse(self.out.exists())
