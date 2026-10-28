@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pdfstudio.inspection import DocumentInspectionError, inspect_pdf
+from pdfstudio.inspection import (DocumentInspectionError, inspect_pdf,\n                                  inspect_top_level_bookmark_starts)
 from pdfstudio.jobs import sha256_file_before_deadline
 from pdfstudio.windows_job import WindowsJobError
 from pypdf import PdfWriter
@@ -35,6 +35,14 @@ class InspectionTests(unittest.TestCase):
             writer.encrypt(password)
         with self.path.open('wb') as fh:
             writer.write(fh)
+
+    def write_bookmarked_pdf(self):
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        writer.add_blank_page(width=400, height=600)
+        writer.add_outline_item("Chapter One", 0)
+        with self.path.open("wb") as stream:
+            writer.write(stream)
 
     def test_blank_document_preflight(self):
         self.write_pdf()
@@ -102,6 +110,41 @@ class InspectionTests(unittest.TestCase):
             with self.assertRaisesRegex(
                     DocumentInspectionError, "timed out during source verification"):
                 inspect_pdf(self.path, timeout_seconds=20)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_bookmark_inspection_initial_source_hash_obeys_deadline(self):
+        self.write_bookmarked_pdf()
+        original = self.path.read_bytes()
+        with patch(
+            "pdfstudio.inspection.sha256_file_before_deadline",
+            side_effect=TimeoutError("simulated initial source hash timeout"),
+        ):
+            with self.assertRaisesRegex(
+                    DocumentInspectionError, "timed out during source verification"):
+                inspect_top_level_bookmark_starts(self.path, timeout_seconds=20)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_bookmark_inspection_final_source_hash_obeys_deadline(self):
+        self.write_bookmarked_pdf()
+        original = self.path.read_bytes()
+        real_hash = sha256_file_before_deadline
+        calls = 0
+
+        def timeout_on_second_hash(path, deadline, chunk_bytes=1024 * 1024):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise TimeoutError("simulated final source hash timeout")
+            return real_hash(path, deadline, chunk_bytes)
+
+        with patch(
+            "pdfstudio.inspection.sha256_file_before_deadline",
+            side_effect=timeout_on_second_hash,
+        ):
+            with self.assertRaisesRegex(
+                    DocumentInspectionError, "timed out during source verification"):
+                inspect_top_level_bookmark_starts(self.path, timeout_seconds=20)
+        self.assertEqual(calls, 2)
         self.assertEqual(self.path.read_bytes(), original)
 
     @unittest.skipUnless(os.name in ("posix", "nt"), "OS worker limits required")
