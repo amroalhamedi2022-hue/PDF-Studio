@@ -1,5 +1,6 @@
 """Real synthetic PDF tests for page-level primitives, no user files."""
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
