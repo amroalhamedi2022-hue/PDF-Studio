@@ -246,3 +246,13 @@ Parent publication cleanup is conservative: it removes the destination only when
 - Corrected source/test head: [`187104caa0e3268cb496836b970bdca4962d1c42`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/187104caa0e3268cb496836b970bdca4962d1c42).
 - Exact CI [#40709973619](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40709973619): Ubuntu **PASS** (194 tests, six platform-specific skips); 100/1000/5000-page synthetic and 64 MiB disk-backed checks passed on Linux. Windows remained **QUEUED** at this checkpoint, so cross-platform status is not yet PASS.
 - This test does not prove resistance to every same-user filesystem race, OS sandboxing, OCR, realistic >=2 GiB files, or platform/device acceptance. F04.05 remains IN PROGRESS; B01 remains OPEN / PARTIAL; B02 stays closed.
+
+
+## 2026-10-28 checkpoint addendum — publication failure never unlinks by caller path
+
+- **B01 — Resource-Bounded PDF Core & Output Integrity: OPEN / PARTIAL. B02 remains closed.**
+- Production fix: [`be93162798fbd89fbc3b3254c8659f8250401f99`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/be93162798fbd89fbc3b3254c8659f8250401f99) removes check-then-unlink cleanup from post-publication verification failures. A failed publication returns an error and may leave an **unverified** destination; it must not be reported as a successful export.
+- Regression test: [`d5a34a2d39b7f560fc65d86ab4e9cf4de2e5709d`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/d5a34a2d39b7f560fc65d86ab4e9cf4de2e5709d).
+- Exact code/test CI: [#40735196677 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40735196677), 195 tests on Ubuntu and 195 on Windows (six platform-specific skips on Ubuntu). 100-page and 64 MiB disk-backed extraction passed on both; Linux 1,000/5,000-page synthetic checkpoint/resume/FTS checks passed.
+- These are generated synthetic fixtures, not real Arabic/English OCR or a realistic >=2 GiB scanned PDF. OS-reboot recovery, full hostile-PDF sandboxing, Android SAF/UI/device, Windows GUI/EXE/device, and complete F01–F10 acceptance remain NOT TESTED.
+- No APK/EXE build was justified for this Python filesystem contract. Google Drive `PDF Studio — HANDOFF` sync remains FAILED / NOT AVAILABLE because no Docs/Drive write connector is exposed; the named document was not updated.
