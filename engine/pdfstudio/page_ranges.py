@@ -16,6 +16,32 @@ class PageRangeError(ValueError):
     """Invalid user-facing page selection; no output should be written."""
 
 
+def _parse_endpoint(digits: str, page_count: int) -> int:
+    """Parse one decimal endpoint without constructing an unbounded Python int.
+
+    Page counts from real PDFs are small enough for a short decimal comparison.
+    Strip leading zeros first (they remain accepted for compatibility), reject
+    obviously oversized values before int(), and normalize Python's
+    integer-string digit-limit errors to the public PageRangeError contract.
+    """
+    normalized = digits.lstrip("0") or "0"
+    try:
+        page_count_digits = str(page_count)
+    except ValueError:
+        # A caller can technically supply an enormous int as page_count. Keep
+        # the API fail-closed below if Python also refuses this endpoint.
+        page_count_digits = ""
+    if page_count_digits and len(normalized) > len(page_count_digits):
+        raise PageRangeError(f"page outside 1..{page_count}")
+    try:
+        value = int(normalized)
+    except ValueError as exc:
+        raise PageRangeError("page number is too large or invalid") from exc
+    if value > page_count:
+        raise PageRangeError(f"page outside 1..{page_count}")
+    return value
+
+
 def parse_page_ranges(spec: str, page_count: int, *, max_selections: int = 10000) -> tuple[int, ...]:
     """Return zero-based page indices for '1-3,5,7-6', '2-', or 'all'.
 
@@ -46,10 +72,10 @@ def parse_page_ranges(spec: str, page_count: int, *, max_selections: int = 10000
         match = _PAGE_TOKEN.fullmatch(token)
         if not match:
             raise PageRangeError(f"invalid page selection token: {token!r}")
-        start = int(match.group(1))
+        start = _parse_endpoint(match.group(1), page_count)
         end_text = match.group(2)
-        end = (page_count if end_text == "" else int(end_text)) if end_text is not None else start
-        if start < 1 or start > page_count or end < 1 or end > page_count:
+        end = (_parse_endpoint(end_text, page_count) if end_text else page_count) if end_text is not None else start
+        if start < 1 or end < 1:
             raise PageRangeError(f"page outside 1..{page_count}")
         step = 1 if end >= start else -1
         range_size = abs(end - start) + 1
