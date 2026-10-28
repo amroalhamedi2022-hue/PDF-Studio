@@ -794,3 +794,16 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Build decision:** no APK/EXE. The question was the parser's input-validation contract and resource-bounded source behavior; source tests directly answer it. Packaging would not provide stronger evidence.
 - **Google Drive PDF Studio — HANDOFF: FAILED / NOT AVAILABLE.** This runtime exposes no Google Docs/Drive write connector; the named document was not updated. No sync success is claimed.
 - **Next:** continue B01 with real-world resource/security evidence and safe recovery validation; do not open B02 yet. No paid runner, private PDF, secret, merge, auto-merge or main change.
+
+
+## 2026-10-28 follow-up — extreme page-count error contract (B01 remains OPEN)
+
+- **Production + regression commit:** [`13d619e482256260cfa168147ba4567e05f43b36`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/13d619e482256260cfa168147ba4567e05f43b36).
+- **Change:** page-range error formatting now catches Python's integer-to-decimal digit-limit error for an extreme caller-supplied `page_count`. Invalid selections continue to raise the documented `PageRangeError` instead of leaking a raw `ValueError`. This is defensive API-contract coverage; a page count with thousands of digits is not a realistic PDF.
+- **Regression:** `test_extreme_page_count_keeps_public_error_contract` checks `"0"` and `"1-0"` with `page_count = 10 ** 5000`, alongside existing 5,000-digit endpoint and leading-zero tests.
+- **Exact code/test CI:** [run #40625791833 — PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40625791833), Windows + Ubuntu, **179 tests per host**; Ubuntu reports six platform-specific skips. Python syntax, complete test suites, 100-page smoke and 64 MiB disk-backed extraction passed on both hosts. Linux 1,000-page and 5,000-page crash/resume/FTS checks passed.
+- **Scale evidence:** Linux 5,000-page fixture is 2,638,282 bytes of synthetic born-digital text, not OCR or a realistic >=2 GiB scan. The run interrupted after 2,500 durable checkpoints, resumed the remaining 2,500, reused all 5,000 on the next pass, and passed FTS integrity; source SHA stayed unchanged. Parent/max-child peak RSS were 53.71/54.02 MiB (separate process high-water marks, not summed). Windows 64 MiB disk-backed extraction passed in 3.137 s; source SHA unchanged and no staging leftovers. Windows RSS was not measured.
+- **Build decision:** no APK/EXE build. This was a Python input-validation/error-contract fix; source tests on both OSes answer the question directly.
+- **Acceptance still NOT TESTED:** real Arabic/English OCR and searchable overlay, realistic >=2 GiB scanned PDFs, OS-reboot recovery, hostile-PDF OS sandbox, Android SAF/UI/APK/device, Windows GUI/EXE/device, and complete F01–F10 acceptance. B01 remains OPEN / PARTIAL; B02 remains closed.
+- **Google Drive Handoff:** `PDF Studio — HANDOFF` remains **FAILED / NOT AVAILABLE** because no Google Docs/Drive write connector is exposed in this runtime. The specified Drive document was not updated; no sync success is claimed.
+- No paid tools/runners, private user PDFs, secrets, merge, auto-merge or `main` changes.

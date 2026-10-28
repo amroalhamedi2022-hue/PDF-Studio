@@ -140,3 +140,11 @@ A stored checkpoint is no longer accepted solely because its current bytes match
 - Synthetic evidence: 100/1000/5000-page born-digital checks and 64 MiB disk-backed extraction passed; 5000-page process-crash/resume and FTS integrity passed on Linux. These do not represent real OCR or >=2 GiB scanned PDFs.
 - **NOT TESTED:** genuine Arabic/English OCR, realistic >=2 GiB scans, OS-reboot recovery, hostile-PDF sandbox, Android SAF/UI/APK/device, Windows GUI/EXE/device and full F01–F10 acceptance. F08.01 remains partial; B01 OPEN, B02 closed.
 - No APK/EXE build was justified for this parser/input-validation change. Google Drive PDF Studio — HANDOFF sync remains FAILED / NOT AVAILABLE because no Docs/Drive write connector is exposed in this runtime.
+
+
+## 2026-10-28 — defensive page-range API regression (B01 remains OPEN)
+
+- Added coverage for an extreme externally supplied integer `page_count` to ensure invalid page ranges still raise `PageRangeError` even when Python refuses to format the bound as decimal text.
+- Production/test SHA: [`13d619e482256260cfa168147ba4567e05f43b36`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/13d619e482256260cfa168147ba4567e05f43b36). Exact CI [#40625791833 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40625791833): 179 tests per OS, Ubuntu six platform-specific skips; syntax, 100-page smoke and 64 MiB disk-backed extraction passed on Ubuntu/Windows, Linux 1,000/5,000-page crash-resume and FTS passed.
+- This does not change the accepted feature count or prove OCR, realistic >=2 GiB scanned-file behavior, reboot recovery, OS sandboxing, or Android/Windows UI/device acceptance. F04.03/F04.06 remain IN PROGRESS / NOT TESTED end-to-end; F08.01 remains partial. Keep B01 OPEN and B02 closed.
+- No APK/EXE build was warranted for this Python parser contract. Google Drive Handoff sync remains FAILED / NOT AVAILABLE because the Docs/Drive write connector is absent; the named Drive document was not updated.
