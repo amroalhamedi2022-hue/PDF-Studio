@@ -142,7 +142,8 @@ class NativeTextStageTests(unittest.TestCase):
         def cancel_after_first_page():
             nonlocal polls
             polls += 1
-            return polls >= 3
+            # One preflight poll, then one poll after page 0 is received.
+            return polls >= 2
 
         first = run_native_text_stage(
             self.journal, self.job, self.artifacts,
