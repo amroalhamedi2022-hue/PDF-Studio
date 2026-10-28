@@ -155,6 +155,8 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
         if not stat.S_ISREG(path_info.st_mode):
             raise PageToolError("PDF staging path must be a regular file")
         expected_identity = (path_info.st_dev, path_info.st_ino)
+        if getattr(path_info, "st_nlink", 1) != 1:
+            raise PageToolError("PDF staging file must not have hard-link aliases")
 
         open_flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         try:
@@ -163,6 +165,7 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
             raise PageToolError("PDF staging file could not be opened safely") from exc
         opened_info = os.fstat(fd)
         if (not stat.S_ISREG(opened_info.st_mode)
+                or getattr(opened_info, "st_nlink", 1) != 1
                 or (opened_info.st_dev, opened_info.st_ino) != expected_identity):
             raise PageToolError("PDF staging identity changed before writing")
 
@@ -180,13 +183,15 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
             fh.flush()
             os.fsync(fh.fileno())
             written_info = os.fstat(fh.fileno())
-            if ((written_info.st_dev, written_info.st_ino) != expected_identity
+            if (getattr(written_info, "st_nlink", 1) != 1
+                    or (written_info.st_dev, written_info.st_ino) != expected_identity
                     or written_info.st_size != capped.length):
                 raise PageToolError("PDF staging identity or size changed while writing")
 
         # A concurrent replacement must not be mistaken for the file we wrote.
         current_info = output.lstat()
         if (not stat.S_ISREG(current_info.st_mode)
+                or getattr(current_info, "st_nlink", 1) != 1
                 or (current_info.st_dev, current_info.st_ino) != expected_identity):
             raise PageToolError("PDF staging path changed after writing")
 
@@ -199,7 +204,8 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
             validation_fd = -1
             validation_info = os.fstat(validation_stream.fileno())
             if ((validation_info.st_dev, validation_info.st_ino) != expected_identity
-                    or not stat.S_ISREG(validation_info.st_mode)):
+                    or not stat.S_ISREG(validation_info.st_mode)
+                    or getattr(validation_info, "st_nlink", 1) != 1):
                 raise PageToolError("PDF staging identity changed during validation")
             if validation_stream.read(5) != b"%PDF-":
                 raise PageToolError("generated PDF has no valid PDF header")
@@ -215,6 +221,8 @@ def _publish(writer: PdfWriter, output: Path, sources: tuple[Path, ...],
             after_validation = os.fstat(validation_stream.fileno())
             final_path_info = output.lstat()
             if (not stat.S_ISREG(final_path_info.st_mode)
+                    or getattr(after_validation, "st_nlink", 1) != 1
+                    or getattr(final_path_info, "st_nlink", 1) != 1
                     or (final_path_info.st_dev, final_path_info.st_ino) != expected_identity
                     or after_validation.st_size != validation_info.st_size
                     or after_validation.st_mtime_ns != validation_info.st_mtime_ns

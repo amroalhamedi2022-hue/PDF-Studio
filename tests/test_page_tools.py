@@ -487,6 +487,28 @@ class PageToolsTests(unittest.TestCase):
         self.assertFalse(staging.exists())
         self.assertEqual(PdfReader(source).pages[0].extract_text().strip(), "preserve this text")
 
+    def test_publish_rejects_staging_hardlink_alias_without_modifying_alias(self):
+        staging = self.root / "hardlink-staging.pdf"
+        alias = self.root / "hardlink-staging-alias.pdf"
+        staging.write_bytes(b"reserved")
+        try:
+            os.link(staging, alias)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"hard-link creation unavailable on this host: {exc}")
+
+        writer = PdfWriter()
+        writer.add_blank_page(width=612, height=792)
+        with self.assertRaisesRegex(PageToolError, "hard-link aliases"):
+            _publish(
+                writer, staging, (self.a,), (sha256_file(self.a),),
+                1024 * 1024, expected_pages=1,
+            )
+        # The staging name is removed by guarded cleanup, but the unrelated
+        # alias retains its original reserved bytes; no PDF is written through it.
+        self.assertFalse(staging.exists())
+        self.assertEqual(alias.read_bytes(), b"reserved")
+        self.assertEqual(len(PdfReader(self.a).pages), 3)
+
     def test_publish_preserves_replacement_path_when_writer_fails(self):
         staging = self.root / "raced-staging.pdf"
         moved = self.root / "moved-original-staging.pdf"
