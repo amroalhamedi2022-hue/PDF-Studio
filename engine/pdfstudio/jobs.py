@@ -206,11 +206,13 @@ class JobJournal:
         expected_sha256: str,
         expected_identity: str | None,
     ) -> bool:
-        """Hash one opened regular file and reject path aliases/replacements.
+        """Verify bytes while rejecting symlink/reparse-point checkpoint paths.
 
-        POSIX uses O_NOFOLLOW. Windows checks the path entry before and after
-        opening and compares it with the opened handle; this is not a complete
-        defense against every same-user Windows path race.
+        POSIX hashes through one O_NOFOLLOW file descriptor and checks that
+        its identity/metadata stayed stable. Windows retains path-based hashing
+        for compatibility with its file-index/stat behavior, with reparse checks
+        and identity checks before and after the read. Neither path is a complete
+        defense against every same-user Windows filesystem race.
         """
         file_path = Path(path)
         try:
@@ -218,41 +220,53 @@ class JobJournal:
             if stat.S_ISLNK(path_before.st_mode) or JobJournal._is_reparse_point(path_before):
                 return False
 
-            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
             if os.name == "posix":
+                if JobJournal._identity_from_stat(path_before) != expected_identity:
+                    return False
                 nofollow = getattr(os, "O_NOFOLLOW", None)
                 if nofollow is None:
                     return False
-                flags |= nofollow
+                fd = os.open(file_path, os.O_RDONLY | nofollow)
+                with os.fdopen(fd, "rb") as stream:
+                    opened_before = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(opened_before.st_mode):
+                        return False
+                    if JobJournal._identity_from_stat(opened_before) != expected_identity:
+                        return False
 
-            fd = os.open(file_path, flags)
-            with os.fdopen(fd, "rb") as stream:
-                opened_before = os.fstat(stream.fileno())
-                if not stat.S_ISREG(opened_before.st_mode):
-                    return False
-                identity_before = JobJournal._identity_from_stat(opened_before)
-                if identity_before != expected_identity:
-                    return False
-                if JobJournal._artifact_stat_fingerprint(path_before) != JobJournal._artifact_stat_fingerprint(opened_before):
-                    return False
+                    digest = hashlib.sha256()
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(block)
 
-                digest = hashlib.sha256()
-                for block in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(block)
+                    opened_after = os.fstat(stream.fileno())
+                    path_after = file_path.lstat()
+                    if stat.S_ISLNK(path_after.st_mode) or JobJournal._is_reparse_point(path_after):
+                        return False
+                    if not stat.S_ISREG(opened_after.st_mode):
+                        return False
+                    if JobJournal._artifact_stat_fingerprint(opened_before) != JobJournal._artifact_stat_fingerprint(opened_after):
+                        return False
+                    if JobJournal._identity_from_stat(path_after) != expected_identity:
+                        return False
+                    return digest.hexdigest() == expected_sha256
 
-                opened_after = os.fstat(stream.fileno())
-                path_after = file_path.lstat()
-                if stat.S_ISLNK(path_after.st_mode) or JobJournal._is_reparse_point(path_after):
-                    return False
-                if not stat.S_ISREG(opened_after.st_mode):
-                    return False
-                if JobJournal._artifact_stat_fingerprint(opened_before) != JobJournal._artifact_stat_fingerprint(opened_after):
-                    return False
-                if JobJournal._artifact_stat_fingerprint(opened_after) != JobJournal._artifact_stat_fingerprint(path_after):
-                    return False
-                if JobJournal._identity_from_stat(path_after) != expected_identity:
-                    return False
-                return digest.hexdigest() == expected_sha256
+            # Windows: keep the existing path-based SHA strategy, but refuse
+            # link/reparse entries at both ends and verify identity around the
+            # read. This avoids relying on fstat fields that differ by handle
+            # type across supported Windows/Python combinations.
+            identity_before = JobJournal._artifact_identity(file_path)
+            if identity_before != expected_identity:
+                return False
+            digest = sha256_file(file_path)
+            identity_after = JobJournal._artifact_identity(file_path)
+            path_after = file_path.lstat()
+            if stat.S_ISLNK(path_after.st_mode) or JobJournal._is_reparse_point(path_after):
+                return False
+            return (
+                identity_before == identity_after == expected_identity
+                and JobJournal._identity_from_stat(path_after) == expected_identity
+                and digest == expected_sha256
+            )
         except (OSError, ValueError):
             return False
 
