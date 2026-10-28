@@ -5,6 +5,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
@@ -14,6 +16,7 @@ from pdfstudio.bounded_parser import IsolatedPdfReader, ParserIsolationError
 from pdfstudio.native_text_stage import (
     cleanup_orphaned_native_text_artifacts,
     run_native_text_stage,
+    _save_page_text,
 )
 from pdfstudio.worker_lease import exclusive_artifact_directory_lock
 
@@ -329,6 +332,45 @@ class NativeTextStageTests(unittest.TestCase):
         self.assertTrue(orphan.exists())
         self.assertEqual(self.journal.recovery_snapshot(self.job, "native_text")["valid_pages"], ())
 
+
+    def test_page_artifact_creation_never_clobbers_existing_name(self):
+        self.artifacts.mkdir()
+        final = self.artifacts / "page-00000007-collision.txt"
+        final.write_text("preserve existing artifact", encoding="utf-8")
+        with patch(
+            "pdfstudio.native_text_stage.uuid.uuid4",
+            return_value=SimpleNamespace(hex="collision"),
+        ):
+            with self.assertRaises(FileExistsError):
+                _save_page_text(self.artifacts, 7, "replacement")
+        self.assertEqual(final.read_text(encoding="utf-8"), "preserve existing artifact")
+        self.assertEqual(list(self.artifacts.iterdir()), [final])
+
+    def test_page_artifact_failure_preserves_concurrent_path_replacement(self):
+        self.artifacts.mkdir()
+        final = self.artifacts / "page-00000003-race.txt"
+        moved_original = self.artifacts / "captured-original.bin"
+
+        def replace_during_directory_sync(_directory):
+            os.replace(final, moved_original)
+            final.write_text("concurrent replacement", encoding="utf-8")
+
+        with (
+            patch(
+                "pdfstudio.native_text_stage.uuid.uuid4",
+                return_value=SimpleNamespace(hex="race"),
+            ),
+            patch(
+                "pdfstudio.native_text_stage._fsync_directory",
+                side_effect=replace_during_directory_sync,
+            ),
+        ):
+            with self.assertRaisesRegex(JobSafetyError, "path changed during publication"):
+                _save_page_text(self.artifacts, 3, "original payload")
+
+        self.assertEqual(final.read_text(encoding="utf-8"), "concurrent replacement")
+        self.assertEqual(moved_original.read_text(encoding="utf-8"), "original payload")
+        self.assertEqual(list(self.artifacts.glob(".text-*.tmp")), [])
 
 if __name__ == "__main__":
     unittest.main()

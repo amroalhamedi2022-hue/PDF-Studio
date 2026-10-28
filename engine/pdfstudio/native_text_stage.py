@@ -9,7 +9,6 @@ from __future__ import annotations
 import math
 import os
 import stat
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -139,20 +138,83 @@ def cleanup_orphaned_native_text_artifacts(
 
 
 def _save_page_text(directory: Path, page: int, text: str) -> Path:
-    """Durably stage a new immutable artifact; never overwrite an old one."""
+    """Durably create a unique checkpoint artifact without clobbering any path.
+
+    O_EXCL reserves the final random name atomically. The artifact is not
+    registered in SQLite until this function returns, so a crash during the
+    write leaves only an unreferenced orphan for the age-gated cleanup path.
+    Failure cleanup is identity-fenced: a concurrently substituted path is
+    never unlinked as if it were the file created here.
+    """
     final = directory / ("page-%08d-%s.txt" % (page, uuid.uuid4().hex))
-    fd, temp_name = tempfile.mkstemp(prefix=".text-", suffix=".tmp", dir=directory)
-    temp = Path(temp_name)
+    payload = text.encode("utf-8")
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+             | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(final, flags, 0o600)
+    expected_identity: tuple[int, int] | None = None
+    expected_fingerprint: tuple[int, ...] | None = None
+    published = False
+
+    def fingerprint(info) -> tuple[int, ...]:
+        return (
+            info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+            info.st_ctime_ns, getattr(info, "st_nlink", 1),
+        )
+
+    def is_our_unchanged_regular_file(info) -> bool:
+        if (not stat.S_ISREG(info.st_mode)
+                or JobJournal._is_reparse_point(info)
+                or getattr(info, "st_nlink", 1) != 1
+                or expected_identity is None
+                or (info.st_dev, info.st_ino) != expected_identity):
+            return False
+        return expected_fingerprint is None or fingerprint(info) == expected_fingerprint
+
     try:
+        opened = os.fstat(fd)
+        if (not stat.S_ISREG(opened.st_mode)
+                or JobJournal._is_reparse_point(opened)
+                or getattr(opened, "st_nlink", 1) != 1):
+            raise JobSafetyError("native-text artifact handle is not a unique regular file")
+        expected_identity = (opened.st_dev, opened.st_ino)
+
         with os.fdopen(fd, "wb") as stream:
-            stream.write(text.encode("utf-8"))
+            fd = -1
+            stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temp, final)
+            written = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(written.st_mode)
+                    or JobJournal._is_reparse_point(written)
+                    or getattr(written, "st_nlink", 1) != 1
+                    or (written.st_dev, written.st_ino) != expected_identity
+                    or written.st_size != len(payload)):
+                raise JobSafetyError("native-text artifact changed while writing")
+            expected_fingerprint = fingerprint(written)
+
+        current = final.lstat()
+        if not is_our_unchanged_regular_file(current):
+            raise JobSafetyError("native-text artifact path changed before publication")
         _fsync_directory(directory)
+        # Recheck after directory durability work. Never return a path that now
+        # names a different file, symlink, reparse point, or hard-link alias.
+        current = final.lstat()
+        if not is_our_unchanged_regular_file(current):
+            raise JobSafetyError("native-text artifact path changed during publication")
+        published = True
         return final
     finally:
-        temp.unlink(missing_ok=True)
+        if fd >= 0:
+            os.close(fd)
+        if not published and expected_identity is not None:
+            try:
+                current = final.lstat()
+                if is_our_unchanged_regular_file(current):
+                    final.unlink()
+                    _fsync_directory(directory)
+            except OSError:
+                # Preserve any entry that cannot be proven to be ours.
+                pass
 
 
 
