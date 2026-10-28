@@ -173,3 +173,14 @@ A stored checkpoint is no longer accepted solely because its current bytes match
 | Android SAF/UI/device and Windows GUI/EXE/device | NOT TESTED | No APK/EXE build was useful for this Python/SQLite contract |
 
 B01 remains **OPEN / PARTIAL**; B02 remains closed. Google Drive `PDF Studio — HANDOFF` synchronization is **FAILED / NOT AVAILABLE** because no Docs/Drive write connector is exposed in this runtime; the named document was not updated.
+## 2026-10-28 — reject symlink paths at checkpoint registration (B01 remains OPEN)
+
+- **Milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity` remains **OPEN / PARTIAL**. B02 remains closed.
+- **Defect fixed:** `JobJournal.checkpoint()` previously called `Path.resolve(strict=True)` before checking the caller-supplied path entry. A symlink could therefore be canonicalized to its target and registered, even though later checkpoint verification correctly rejected symlink/reparse paths. Registration now uses `lstat()` on the supplied entry first, rejects symlink/reparse and non-regular entries, then compares the original-entry and canonical-target metadata fingerprints so a path replacement during resolution fails closed.
+- **Production commit:** [`3da8dd2a02e658b6ebbe3123768a172ede2138b3`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/3da8dd2a02e658b6ebbe3123768a172ede2138b3).
+- **Regression commit:** [`844dd3d92ea91b2120ba3cca427dd8025c1fdffb`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/844dd3d92ea91b2120ba3cca427dd8025c1fdffb) adds `test_checkpoint_registration_rejects_symlink_path_before_resolution`.
+- **Exact code/test CI:** [run #40645304881 — PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40645304881): **186 tests on Ubuntu and 186 on Windows**; Ubuntu has six platform-specific skips. Syntax, 100-page smoke and 64 MiB disk-backed extraction passed on both OSes. Linux 1,000-page indexing and 5,000-page abrupt-process checkpoint/resume/FTS integrity passed; the 5,000-page fixture is 2.64 MB synthetic born-digital text, not OCR or a realistic >=2 GiB scan.
+- **Acceptance limits:** real Arabic/English OCR, realistic >=2 GiB scanned PDFs, OS-reboot recovery, hostile-PDF OS sandboxing, Android SAF/UI/APK/device, Windows GUI/EXE/device and full F01–F10 remain **NOT TESTED**. F04.03 remains IN PROGRESS; B01 remains OPEN / PARTIAL.
+- **Build decision:** no APK/EXE build. This change is a Python/SQLite checkpoint-registration contract directly exercised by source tests on Ubuntu and Windows; packaging would not answer a stronger test question.
+- **Google Drive Handoff:** `PDF Studio — HANDOFF` sync is **FAILED / NOT AVAILABLE** because no Google Docs/Drive write connector is exposed in this runtime. The specified Drive document was not updated; no successful sync is claimed.
+- No paid runners/APIs, private user PDFs, secrets, merge, auto-merge or `main` changes.
