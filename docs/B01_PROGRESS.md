@@ -926,3 +926,13 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Acceptance:** B01 remains OPEN / PARTIAL; B02 remains closed. F04.05/F08.01 and full F01–F10 acceptance are not declared PASS from this fix alone.
 - **Google Drive `PDF Studio — HANDOFF`: FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The specified document was not updated; no sync success is claimed.
 - No merge, auto-merge, `main` changes, paid tools/runners, user PDFs, or secrets.
+
+
+## Handoff checkpoint — 2026-10-28 (B01 remains OPEN / PARTIAL)
+
+- **Inspected PR head:** `9456a72d426bd625eeb4ce79113b9d01202fd069` on `feature/b01-pdf-core`; draft [PR #2](https://github.com/amroalhamedi2022-hue/PDF-Studio/pull/2), stacked on B00. No merge, auto-merge, or `main` changes.
+- **Latest detailed verified source/test checkpoint recorded before this update:** [CI #40735196677 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40735196677), 195 tests on Ubuntu and 195 on Windows (Ubuntu skips six platform-specific cases), plus 100-page smoke and 64 MiB disk-backed extraction; Linux 1,000- and 5,000-page synthetic checkpoint/crash/resume/FTS checks passed. That evidence is valid for its recorded SHA, **not automatically for the inspected current head**. Exact-head CI was not rechecked as part of this handoff-only update.
+- **Acceptance:** B01 remains OPEN / PARTIAL. Existing bounded Python/SQLite, checkpoint/resume, FTS and filesystem-safety evidence is not equivalent to realistic large scanned PDF/OCR or platform acceptance. Real Arabic/English OCR, realistic >=2 GiB scans, OS-reboot recovery, hostile-input OS sandbox, Android SAF/UI/device, Windows GUI/EXE and full F01–F10 remain **NOT TESTED** unless separately evidenced by an exact-head run.
+- **No build:** no APK/EXE was created for this documentation-only update; it would not answer a new implementation question.
+- **Next resume point:** inspect CI against exact PR #2 head `9456a72`, fix any failing test rather than relying on older green runs, then continue B01 with realistic large-file/resource-bound tests and safe worker ownership/recovery. Keep B02 closed until B01 gates are accepted.
+- **Drive sync:** not attempted here; this update is recorded in the repository handoff file. Do not infer that the separate Google Drive handoff was synchronized.
