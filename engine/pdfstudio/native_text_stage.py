@@ -155,6 +155,23 @@ def _save_page_text(directory: Path, page: int, text: str) -> Path:
         temp.unlink(missing_ok=True)
 
 
+
+def _count_utf8_characters(path: Path, limit: int) -> int:
+    """Count UTF-8 characters in bounded chunks, stopping once limit is exceeded.
+
+    Existing checkpoint files are included in the job-wide text budget on resume;
+    never load a whole page artifact into memory just to account for its size.
+    """
+    count = 0
+    with path.open("r", encoding="utf-8", newline="") as stream:
+        while True:
+            chunk = stream.read(64 * 1024)
+            if not chunk:
+                return count
+            count += len(chunk)
+            if count > limit:
+                return count
+
 def run_native_text_stage(
     journal: JobJournal,
     job_id: str,
@@ -176,6 +193,18 @@ def run_native_text_stage(
     """
     if cancel_requested is not None and not callable(cancel_requested):
         raise TypeError("cancel_requested must be callable")
+    for name, value in (
+        ("max_pages", max_pages),
+        ("max_chars_per_page", max_chars_per_page),
+        ("max_total_chars", max_total_chars),
+        ("max_memory_mb", max_memory_mb),
+    ):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"{name} must be a positive integer")
+    if (not isinstance(timeout_seconds, (int, float))
+            or isinstance(timeout_seconds, bool)
+            or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+        raise ValueError("timeout_seconds must be finite and positive")
     if (not isinstance(max_checkpoint_bytes, int)
             or isinstance(max_checkpoint_bytes, bool)
             or max_checkpoint_bytes < 1):
@@ -197,22 +226,55 @@ def run_native_text_stage(
             if job["page_count"] > max_pages:
                 raise ValueError("job exceeds configured page limit")
             verified = set(snapshot["valid_pages"])
+            with journal._open() as db:
+                rows = db.execute(
+                    "SELECT page_index, artifact FROM checkpoints WHERE job_id=? AND stage='native_text'",
+                    (job_id,),
+                ).fetchall()
+            checkpoint_artifacts = {
+                row["page_index"]: Path(row["artifact"]) for row in rows
+            }
+
             missing: list[int] = []
+            checkpoint_chars = 0
             for page in range(job["page_count"]):
-                if page in verified and journal.verified_checkpoint(job_id, page, "native_text"):
-                    skipped.append(page)
-                else:
+                if page not in verified or not journal.verified_checkpoint(
+                    job_id, page, "native_text"
+                ):
                     missing.append(page)
+                    continue
+
+                artifact = checkpoint_artifacts.get(page)
+                if artifact is None:
+                    raise JobSafetyError("verified native-text checkpoint row is missing")
+                try:
+                    page_chars = _count_utf8_characters(artifact, max_chars_per_page)
+                except (OSError, UnicodeDecodeError):
+                    # A byte-valid legacy artifact may still not be valid UTF-8;
+                    # rebuild it rather than trusting it as a native-text page.
+                    missing.append(page)
+                    continue
+
+                # Recheck after reading: a checkpoint may be replaced while it is
+                # being counted. Never count or skip bytes that no longer verify.
+                if not journal.verified_checkpoint(job_id, page, "native_text"):
+                    missing.append(page)
+                    continue
+                if page_chars > max_chars_per_page:
+                    raise ValueError(
+                        "verified native-text checkpoint exceeds configured per-page character cap"
+                    )
+                if checkpoint_chars + page_chars > max_total_chars:
+                    raise ValueError(
+                        "verified native-text checkpoints exceed configured total character cap"
+                    )
+                checkpoint_chars += page_chars
+                skipped.append(page)
 
             # Bound checkpoint and leftover bytes before allocating more artifacts.
             # Registered files count even with a bad digest; stale unreferenced
             # stage files were pruned under the directory lock, while recent
             # leftovers remain counted against the same cap.
-            with journal._open() as db:
-                rows = db.execute(
-                    "SELECT artifact FROM checkpoints WHERE job_id=? AND stage='native_text'",
-                    (job_id,),
-                ).fetchall()
             checkpoint_bytes = 0
             for row in rows:
                 try:
@@ -224,14 +286,21 @@ def run_native_text_stage(
             if checkpoint_bytes > max_checkpoint_bytes:
                 raise ValueError("registered checkpoint artifacts exceed configured byte cap")
 
+            remaining_total_chars = max_total_chars - checkpoint_chars
+            if missing and remaining_total_chars < 1:
+                raise ValueError(
+                    "native-text checkpoints exhaust the configured total character cap"
+                )
+
             if cancel_requested is not None and cancel_requested():
                 owner.set_state("paused")
                 return {"processed": (), "skipped": tuple(skipped), "cancelled": True}
             if missing:
+                processed_chars = 0
                 with IsolatedPdfReader(
                     job["source"], max_pages=max_pages,
                     max_chars_per_page=max_chars_per_page,
-                    max_total_chars=max_total_chars,
+                    max_total_chars=remaining_total_chars,
                     timeout_seconds=timeout_seconds, max_memory_mb=max_memory_mb,
                     page_indexes=missing,
                 ) as reader:
@@ -242,12 +311,22 @@ def run_native_text_stage(
                             owner.set_state("paused")
                             return {"processed": tuple(processed),
                                     "skipped": tuple(skipped), "cancelled": True}
+                        page_chars = len(text)
+                        if page_chars > max_chars_per_page:
+                            raise JobSafetyError(
+                                "native-text parser returned text beyond the per-page character cap"
+                            )
+                        if checkpoint_chars + processed_chars + page_chars > max_total_chars:
+                            raise JobSafetyError(
+                                "native-text stage exceeds the configured total character cap"
+                            )
                         encoded_size = len(text.encode("utf-8"))
                         if checkpoint_bytes + encoded_size > max_checkpoint_bytes:
                             raise ValueError("native-text checkpoints exceed configured byte cap")
                         artifact = _save_page_text(folder, page, text)
                         owner.checkpoint(page, "native_text", artifact)
                         checkpoint_bytes += encoded_size
+                        processed_chars += page_chars
                         processed.append(page)
             final = owner.recovery_snapshot("native_text")
             if final["invalid_pages"] or final["missing_pages"]:
