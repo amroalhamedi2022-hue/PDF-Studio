@@ -183,6 +183,10 @@ def inspect_pdf(source: str | Path, *, password: str | None = None,
                                     max_memory_mb * 1024 * 1024,
                                     max(2, math.ceil(timeout_seconds) + 1)),
                               daemon=True)
+    # The wall-clock budget starts before process creation and Windows Job
+    # Object assignment; otherwise slow startup can exceed the caller's timeout
+    # before the parser deadline even begins.
+    deadline = time.monotonic() + timeout_seconds
     try:
         process.start()
         child.close()
@@ -192,8 +196,10 @@ def inspect_pdf(source: str | Path, *, password: str | None = None,
             except WindowsJobError as exc:
                 raise DocumentInspectionError("Windows inspection worker could not be confined") from exc
             gate.set()
-        deadline = time.monotonic() + timeout_seconds
-        if not parent.poll(max(0.0, deadline - time.monotonic())):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise DocumentInspectionError("isolated PDF inspection timed out")
+        if not parent.poll(remaining):
             raise DocumentInspectionError("isolated PDF inspection timed out")
         try:
             message = parent.recv()
@@ -207,8 +213,12 @@ def inspect_pdf(source: str | Path, *, password: str | None = None,
         process.join(timeout=max(0.0, deadline - time.monotonic()))
         if process.is_alive() or process.exitcode != 0:
             raise DocumentInspectionError("isolated inspection worker did not exit cleanly")
+        if time.monotonic() >= deadline:
+            raise DocumentInspectionError("isolated PDF inspection timed out")
         if sha256_file(src) != result.sha256:
             raise DocumentInspectionError("PDF changed during inspection")
+        if time.monotonic() >= deadline:
+            raise DocumentInspectionError("isolated PDF inspection timed out")
         return result
     finally:
         child.close()
