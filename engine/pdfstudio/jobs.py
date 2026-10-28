@@ -225,6 +225,26 @@ class JobJournal:
         mask = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
         return bool(mask and getattr(info, "st_file_attributes", 0) & mask)
 
+    @classmethod
+    def _ensure_output_absent(
+        cls, path: str | Path, *, exists_message: str | None = None
+    ) -> None:
+        """Reject every existing destination entry, including dangling links.
+
+        Path.exists() follows links and returns False for a broken symlink. That
+        is unsafe for no-clobber output reservation: a later writer can follow
+        the link and create a file at an unintended target. lstat() observes the
+        destination entry itself; Windows reparse points are rejected too.
+        """
+        entry = Path(path)
+        try:
+            info = entry.lstat()
+        except FileNotFoundError:
+            return
+        if stat.S_ISLNK(info.st_mode) or cls._is_reparse_point(info):
+            raise JobSafetyError("output path must not be a symlink or reparse point")
+        raise FileExistsError(exists_message or f"output already exists: {entry}")
+
     @staticmethod
     def _checkpoint_artifact_matches(
         path: str | Path,
@@ -329,14 +349,17 @@ class JobJournal:
     def create_job(self, source: str | Path, output: str | Path, page_count: int) -> str:
         """Pin source digest. Never overwrite the input or an existing output."""
         src = Path(source).resolve(strict=True)
-        dst = Path(output).resolve()
+        requested_dst = Path(output)
+        dst = requested_dst.resolve()
         destination_key = self._destination_key(dst)
         if not src.is_file():
             raise JobSafetyError("source must be an ordinary file")
         if dst == src:
             raise JobSafetyError("source and output must be different files")
-        if dst.exists():
-            raise FileExistsError(f"output already exists: {dst}")
+        # Check the caller's final path entry before and after canonicalization:
+        # resolve() alone silently follows a dangling output symlink.
+        self._ensure_output_absent(requested_dst)
+        self._ensure_output_absent(dst)
         if not isinstance(page_count, int) or isinstance(page_count, bool) or page_count < 1:
             raise ValueError("page_count must be a positive integer")
         with src.open("rb") as pdf:
@@ -361,8 +384,8 @@ class JobJournal:
             # The earlier filesystem check is only a fast path; two creators
             # can both pass it while the destination is still absent.
             db.execute("BEGIN IMMEDIATE")
-            if dst.exists():
-                raise FileExistsError(f"output already exists: {dst}")
+            self._ensure_output_absent(requested_dst)
+            self._ensure_output_absent(dst)
             reserved = db.execute(
                 "SELECT 1 FROM jobs WHERE output_key=? LIMIT 1", (destination_key,)
             ).fetchone()
@@ -474,8 +497,10 @@ class JobJournal:
                     raise JobSafetyError("terminal job cannot be resumed")
                 if owner is None and job["state"] != "pending":
                     raise JobSafetyError("legacy job has no verified worker ownership history")
-                if Path(job["output"]).exists():
-                    raise FileExistsError("final output already exists; refusing resume")
+                self._ensure_output_absent(
+                    job["output"],
+                    exists_message="final output already exists; refusing resume",
+                )
                 self._assert_source_fingerprint(job["source"], fingerprint)
                 db.execute("""INSERT INTO worker_owners(job_id, generation, token) VALUES(?, 1, ?)
                     ON CONFLICT(job_id) DO UPDATE SET generation=generation+1, token=excluded.token""",

@@ -30,6 +30,35 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             self.journal.create_job(self.original, self.output, 1)
 
+    def test_create_job_rejects_broken_output_symlink_without_journaling(self):
+        target = self.root / "not-created-target.pdf"
+        link = self.root / "dangling-output.pdf"
+        try:
+            os.symlink(str(target), str(link))
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation unavailable on this host: {exc}")
+
+        with self.assertRaisesRegex(JobSafetyError, "symlink or reparse point"):
+            self.journal.create_job(self.original, link, 1)
+        self.assertFalse(target.exists())
+        with self.journal._open() as db:
+            count = db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_worker_session_rejects_output_symlink_added_after_reservation(self):
+        job = self.journal.create_job(self.original, self.output, 1)
+        target = self.root / "late-target.pdf"
+        try:
+            os.symlink(str(target), str(self.output))
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation unavailable on this host: {exc}")
+
+        with self.assertRaisesRegex(JobSafetyError, "symlink or reparse point"):
+            with self.journal.worker_session(job):
+                pass
+        self.assertEqual(self.journal.get_job(job)["state"], "pending")
+        self.assertFalse(target.exists())
+
     @unittest.skipUnless(os.name == "nt", "Windows case-insensitive path semantics required")
     def test_output_reservation_rejects_case_aliases_on_windows(self):
         first_path = self.root / "Output-Case-Alias.PDF"
