@@ -265,9 +265,50 @@ class IsolatedPageToolTests(unittest.TestCase):
             with self.assertRaisesRegex(PageToolError, "hard-link count|hard-link aliases"):
                 extract_pages(self.a, self.out, "1")
 
-        self.assertFalse(self.out.exists())
+        # Publication failed: the caller-visible path may remain, but it is
+        # explicitly unverified. The extra alias is intentionally preserved.
+        self.assertTrue(self.out.is_file())
+        self.assertEqual((self.out.stat().st_dev, self.out.stat().st_ino),
+                         (alias.stat().st_dev, alias.stat().st_ino))
         self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
-        # Cleanup must not delete a path outside the private staging directory.
+        self.assertTrue(alias.is_file())
+
+    def test_publication_cleanup_does_not_delete_destination_replaced_after_identity_check(self):
+        real_link = os.link
+        real_lstat = Path.lstat
+        alias = self.root / "external-stage-alias.bin"
+        displaced = self.root / "displaced-publication-inode.bin"
+        sentinel = b"owned by concurrent destination creator"
+        publication_complete = False
+        replacement_done = False
+
+        def alias_then_publish(staged, destination):
+            nonlocal publication_complete
+            real_link(staged, alias)
+            result = real_link(staged, destination)
+            publication_complete = True
+            return result
+
+        def lstat_with_path_replacement(path):
+            nonlocal replacement_done
+            info = real_lstat(path)
+            if publication_complete and not replacement_done and Path(path) == self.out:
+                # Return the inode observed by the caller, but replace the
+                # pathname before its later cleanup action. This deterministically
+                # models the check-then-unlink race.
+                replacement_done = True
+                Path(path).rename(displaced)
+                Path(path).write_bytes(sentinel)
+            return info
+
+        with mock.patch("pdfstudio.page_isolation.os.link", side_effect=alias_then_publish), \\
+             mock.patch("pdfstudio.page_isolation.Path.lstat", new=lstat_with_path_replacement):
+            with self.assertRaisesRegex(PageToolError, "published PDF identity or hard-link count changed"):
+                extract_pages(self.a, self.out, "1")
+
+        self.assertTrue(replacement_done)
+        self.assertEqual(self.out.read_bytes(), sentinel)
+        self.assertTrue(displaced.is_file())
         self.assertTrue(alias.is_file())
 
     def test_failed_parent_publication_leaves_no_output_or_staging(self):
