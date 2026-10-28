@@ -130,3 +130,13 @@ A stored checkpoint is no longer accepted solely because its current bytes match
 - **NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scanned PDFs, OS-reboot recovery, hostile-input sandbox, Android SAF/UI/APK/device, Windows GUI/EXE/device, full F01–F10.
 - B01 remains OPEN / PARTIAL; B02 remains closed. No APK/EXE build was justified for this Python/SQLite contract.
 - Google Drive `PDF Studio — HANDOFF` sync: **FAILED / NOT AVAILABLE** (no Docs/Drive write connector exposed); no successful update is claimed.
+
+
+## 2026-10-28 — page-range input hardening (F08.01 partial; B01 remains OPEN)
+
+- Page-range endpoint parsing now rejects 5,000-digit start/end tokens without unbounded integer conversion and consistently raises PageRangeError. Leading-zero inputs remain supported.
+- Production commit [3d5c78a0bfbe4e00ad51291bb85c4171d8d1a2b6](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/3d5c78a0bfbe4e00ad51291bb85c4171d8d1a2b6); regression [edf9087a9e5db554e056d4da1172b97d4fa0333f](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/edf9087a9e5db554e056d4da1172b97d4fa0333f); hard-link fixture correction [94dfb758f8d9ff0caee126537b090340af370690](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/94dfb758f8d9ff0caee126537b090340af370690).
+- Exact CI [#40620847203 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40620847203): Ubuntu + Windows, 178 tests per host; Ubuntu skips six platform-specific cases. The first run failed because a pre-existing hard-link test fixture contradicted the stricter no-alias checkpoint contract; the fixture was corrected and the exact rerun passed.
+- Synthetic evidence: 100/1000/5000-page born-digital checks and 64 MiB disk-backed extraction passed; 5000-page process-crash/resume and FTS integrity passed on Linux. These do not represent real OCR or >=2 GiB scanned PDFs.
+- **NOT TESTED:** genuine Arabic/English OCR, realistic >=2 GiB scans, OS-reboot recovery, hostile-PDF sandbox, Android SAF/UI/APK/device, Windows GUI/EXE/device and full F01–F10 acceptance. F08.01 remains partial; B01 OPEN, B02 closed.
+- No APK/EXE build was justified for this parser/input-validation change. Google Drive PDF Studio — HANDOFF sync remains FAILED / NOT AVAILABLE because no Docs/Drive write connector is exposed in this runtime.
