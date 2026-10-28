@@ -137,35 +137,50 @@ class NativeTextStageTests(unittest.TestCase):
         self.assertEqual(second["skipped"], (0,))
 
     def test_total_character_cap_applies_across_resume(self):
-        polls = 0
+        # Page 0 consumes 20 characters; each later page consumes 14. The
+        # first invocation commits page 0, then fails at page 1 under a 25-char
+        # total cap. Resume must count those 20 already-committed characters:
+        # only five remain, so page 1 must not be committed.
+        source = self.root / "character-cap.pdf"
+        writer = PdfWriter()
+        font = DictionaryObject({
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        })
+        font_ref = writer._add_object(font)
+        for text in ("Page zero has twenty", "Page 1 English", "Page 2 English"):
+            page = writer.add_blank_page(width=612, height=792)
+            page[NameObject("/Resources")] = DictionaryObject({
+                NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})
+            })
+            stream = DecodedStreamObject()
+            stream.set_data(
+                f"BT /F1 12 Tf 40 700 Td ({text}) Tj ET".encode("ascii")
+            )
+            page[NameObject("/Contents")] = writer._add_object(stream)
+        with source.open("wb") as output:
+            writer.write(output)
 
-        def cancel_after_first_page():
-            nonlocal polls
-            polls += 1
-            # One preflight poll, then one poll after page 0 is received.
-            return polls >= 2
-
-        first = run_native_text_stage(
-            self.journal, self.job, self.artifacts,
-            max_total_chars=25, cancel_requested=cancel_after_first_page,
-        )
-        self.assertEqual(first["processed"], (0,))
-        self.assertEqual(self.journal.recovery_snapshot(
-            self.job, "native_text"
-        )["valid_pages"], (0,))
-
-        # Page 0 already consumed 14 characters, leaving only 11. The next
-        # 14-character page must not be committed on resume, even though the
-        # parser's per-invocation total would otherwise allow two missing pages.
+        job = self.journal.create_job(source, self.root / "character-cap-output.pdf", 3)
+        artifacts = self.root / "character-cap-artifacts"
         with self.assertRaises(ParserIsolationError):
             run_native_text_stage(
-                self.journal, self.job, self.artifacts, max_total_chars=25,
+                self.journal, job, artifacts, max_total_chars=25,
+            )
+        first_snapshot = self.journal.recovery_snapshot(job, "native_text")
+        self.assertEqual(first_snapshot["valid_pages"], (0,))
+        self.assertEqual(first_snapshot["missing_pages"], (1, 2))
+
+        with self.assertRaises(ParserIsolationError):
+            run_native_text_stage(
+                self.journal, job, artifacts, max_total_chars=25,
             )
 
-        snapshot = self.journal.recovery_snapshot(self.job, "native_text")
-        self.assertEqual(snapshot["valid_pages"], (0,))
-        self.assertEqual(snapshot["missing_pages"], (1, 2))
-        self.assertEqual(self.journal.get_job(self.job)["state"], "paused")
+        resumed_snapshot = self.journal.recovery_snapshot(job, "native_text")
+        self.assertEqual(resumed_snapshot["valid_pages"], (0,))
+        self.assertEqual(resumed_snapshot["missing_pages"], (1, 2))
+        self.assertEqual(self.journal.get_job(job)["state"], "paused")
 
     def test_process_crash_keeps_verified_page_and_recovers(self):
         process = mp.get_context("spawn").Process(
