@@ -195,9 +195,9 @@ def _publish_verified_staging_file(staged: Path, destination: Path,
     os.link provides atomic no-clobber behavior for the destination. The
     post-link identity check closes a second gap: a staging path replaced after
     pre-publication validation must not be reported as a successful export.
-    Cleanup is limited to a destination that still aliases the unexpected
-    staging inode created by this publication attempt; unrelated racing outputs
-    are never removed.
+    Post-link failures preserve the visible destination because a
+    check-then-unlink can delete a concurrent replacement. The caller receives
+    an error and must treat any remaining destination as unverified.
     """
     from .page_tools import PageToolError
 
@@ -219,18 +219,13 @@ def _publish_verified_staging_file(staged: Path, destination: Path,
             or staging_identity != expected_identity
             or getattr(published_info, "st_nlink", 1) != 2
             or getattr(staged_info, "st_nlink", 1) != 2):
-        # os.link succeeded above, so remove the destination only while it
-        # still aliases this operation's staging inode. Never unlink a
-        # different racing output that replaced the caller-visible path.
-        if published_identity == expected_identity:
-            # Remove only the exact inode created by this publication attempt.
-            # If a concurrent owner replaced the destination with a different
-            # inode, preserve it even when the staging pathname was replaced too.
-            try:
-                destination.unlink()
-            except OSError:
-                pass
-        raise PageToolError("published PDF identity or hard-link count changed; refusing publication")
+        # Do not unlink by pathname after an lstat check: another process can
+        # replace the name between those two syscalls. Preserve any visible
+        # destination and make the caller treat it as unverified.
+        raise PageToolError(
+            "published PDF identity or hard-link count changed; "
+            "destination may remain unverified"
+        )
 
     # Validate both caller-visible and staging paths. Exactly two links are
     # expected now; any third link can mutate the output through an alias.
@@ -239,15 +234,15 @@ def _publish_verified_staging_file(staged: Path, destination: Path,
                              expected_link_count=2)
         _verify_staging_file(destination, expected_identity, max_output_bytes,
                              expected_link_count=2)
-    except PageToolError:
-        try:
-            current = destination.lstat()
-            if (stat.S_ISREG(current.st_mode)
-                    and (current.st_dev, current.st_ino) == expected_identity):
-                destination.unlink()
-        except OSError:
-            pass
-        raise
+    except PageToolError as exc:
+        # There is no portable atomic "unlink only if this pathname still
+        # names inode X" primitive. A check-then-unlink can delete a concurrent
+        # owner's replacement. Preserve the path and surface an explicit
+        # unverified-output error instead.
+        raise PageToolError(
+            "published PDF failed post-publication verification; "
+            "destination may remain unverified"
+        ) from exc
     return destination
 
 
