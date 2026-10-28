@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pdfstudio.inspection import DocumentInspectionError, inspect_pdf
+from pdfstudio.jobs import sha256_file_before_deadline
 from pdfstudio.windows_job import WindowsJobError
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
@@ -83,6 +84,24 @@ class InspectionTests(unittest.TestCase):
         original = self.path.read_bytes()
         with self.assertRaises(DocumentInspectionError):
             inspect_pdf(self.path, timeout_seconds=0.000001)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_deadline_aware_hash_rejects_expired_budget(self):
+        self.write_pdf()
+        with self.assertRaisesRegex(TimeoutError, "deadline exceeded during source hashing"):
+            sha256_file_before_deadline(self.path, time.monotonic() - 1.0)
+
+    @unittest.skipUnless(os.name in ("posix", "nt"), "OS worker limits required")
+    def test_parent_source_rehash_timeout_is_reported_and_input_preserved(self):
+        self.write_pdf(with_text=True)
+        original = self.path.read_bytes()
+        # The spawned parser remains real; only the parent's post-worker
+        # verification hash is forced over budget to exercise the failure path.
+        with patch("pdfstudio.inspection.sha256_file_before_deadline",
+                   side_effect=TimeoutError("simulated source verification deadline")):
+            with self.assertRaisesRegex(
+                    DocumentInspectionError, "timed out during source verification"):
+                inspect_pdf(self.path, timeout_seconds=20)
         self.assertEqual(self.path.read_bytes(), original)
 
     @unittest.skipUnless(os.name in ("posix", "nt"), "OS worker limits required")
