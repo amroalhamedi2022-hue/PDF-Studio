@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 from contextlib import contextmanager
 from typing import Iterator
 import sqlite3
@@ -174,16 +175,30 @@ class JobJournal:
         return os.path.normcase(os.path.normpath(value))
 
     @staticmethod
-    def _artifact_identity(path: str | Path) -> str | None:
-        """Stable device/inode identity for detecting hard-link aliases.
-
-        Some filesystems do not expose a useful inode number. In that case the
-        journal still enforces its existing resolved-path uniqueness check.
-        """
-        stat = Path(path).stat()
-        if not stat.st_ino:
+    def _identity_from_stat(info) -> str | None:
+        """Return a stable file identity where the host exposes an inode."""
+        if not getattr(info, "st_ino", 0):
             return None
-        return f"{stat.st_dev}:{stat.st_ino}"
+        return f"{info.st_dev}:{info.st_ino}"
+
+    @staticmethod
+    def _artifact_identity(path: str | Path) -> str | None:
+        """Stable device/inode identity for detecting hard-link aliases."""
+        return JobJournal._identity_from_stat(Path(path).stat())
+
+    @staticmethod
+    def _artifact_stat_fingerprint(info) -> tuple[int, ...]:
+        """Metadata used to detect replacement or mutation during one open read."""
+        return (
+            info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns,
+        )
+
+    @staticmethod
+    def _is_reparse_point(info) -> bool:
+        """Return whether Windows marks an entry as a reparse point."""
+        mask = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        return bool(mask and getattr(info, "st_file_attributes", 0) & mask)
 
     @staticmethod
     def _checkpoint_artifact_matches(
@@ -191,19 +206,55 @@ class JobJournal:
         expected_sha256: str,
         expected_identity: str | None,
     ) -> bool:
-        """Verify checkpoint bytes and recorded identity without trusting SQLite alone."""
+        """Hash one opened regular file and reject path aliases/replacements.
+
+        POSIX uses O_NOFOLLOW. Windows checks the path entry before and after
+        opening and compares it with the opened handle; this is not a complete
+        defense against every same-user Windows path race.
+        """
+        file_path = Path(path)
         try:
-            identity_before = JobJournal._artifact_identity(path)
-            if identity_before != expected_identity:
+            path_before = file_path.lstat()
+            if stat.S_ISLNK(path_before.st_mode) or JobJournal._is_reparse_point(path_before):
                 return False
-            digest = sha256_file(path)
-            identity_after = JobJournal._artifact_identity(path)
-        except OSError:
+
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            if os.name == "posix":
+                nofollow = getattr(os, "O_NOFOLLOW", None)
+                if nofollow is None:
+                    return False
+                flags |= nofollow
+
+            fd = os.open(file_path, flags)
+            with os.fdopen(fd, "rb") as stream:
+                opened_before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(opened_before.st_mode):
+                    return False
+                identity_before = JobJournal._identity_from_stat(opened_before)
+                if identity_before != expected_identity:
+                    return False
+                if JobJournal._artifact_stat_fingerprint(path_before) != JobJournal._artifact_stat_fingerprint(opened_before):
+                    return False
+
+                digest = hashlib.sha256()
+                for block in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(block)
+
+                opened_after = os.fstat(stream.fileno())
+                path_after = file_path.lstat()
+                if stat.S_ISLNK(path_after.st_mode) or JobJournal._is_reparse_point(path_after):
+                    return False
+                if not stat.S_ISREG(opened_after.st_mode):
+                    return False
+                if JobJournal._artifact_stat_fingerprint(opened_before) != JobJournal._artifact_stat_fingerprint(opened_after):
+                    return False
+                if JobJournal._artifact_stat_fingerprint(opened_after) != JobJournal._artifact_stat_fingerprint(path_after):
+                    return False
+                if JobJournal._identity_from_stat(path_after) != expected_identity:
+                    return False
+                return digest.hexdigest() == expected_sha256
+        except (OSError, ValueError):
             return False
-        return (
-            identity_before == identity_after == expected_identity
-            and digest == expected_sha256
-        )
 
     @contextmanager
     def _open(self) -> Iterator[sqlite3.Connection]:
