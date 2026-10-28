@@ -301,10 +301,10 @@ class IsolatedPageToolTests(unittest.TestCase):
                 Path(path).write_bytes(sentinel)
             return info
 
-        with mock.patch("pdfstudio.page_isolation.os.link", side_effect=alias_then_publish), \\
-             mock.patch("pdfstudio.page_isolation.Path.lstat", new=lstat_with_path_replacement):
-            with self.assertRaisesRegex(PageToolError, "published PDF identity or hard-link count changed"):
-                extract_pages(self.a, self.out, "1")
+        with mock.patch("pdfstudio.page_isolation.os.link", side_effect=alias_then_publish):
+            with mock.patch("pdfstudio.page_isolation.Path.lstat", new=lstat_with_path_replacement):
+                with self.assertRaisesRegex(PageToolError, "published PDF identity or hard-link count changed"):
+                    extract_pages(self.a, self.out, "1")
 
         self.assertTrue(replacement_done)
         self.assertEqual(self.out.read_bytes(), sentinel)
