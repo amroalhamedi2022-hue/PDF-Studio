@@ -145,18 +145,23 @@ class JournalTests(unittest.TestCase):
         artifact = self.root / "checkpoint-page.txt"
         alias = self.root / "checkpoint-page-hardlink.txt"
         artifact.write_text("immutable checkpoint bytes", encoding="utf-8")
+        # Register a clean single-link checkpoint first. Creating an alias later
+        # must invalidate that checkpoint while the alias exists, and the alias
+        # itself must never be registered for either job.
+        self.journal.checkpoint(first_job, 0, "ocr", artifact)
         try:
             os.link(artifact, alias)
         except (OSError, NotImplementedError) as exc:
             self.skipTest(f"hard links unavailable on this filesystem: {exc}")
 
-        self.journal.checkpoint(first_job, 0, "ocr", artifact)
-        with self.assertRaisesRegex(JobSafetyError, "file identity"):
+        with self.assertRaisesRegex(JobSafetyError, "hard-link aliases"):
             self.journal.checkpoint(first_job, 1, "ocr", alias)
-        with self.assertRaisesRegex(JobSafetyError, "file identity"):
+        with self.assertRaisesRegex(JobSafetyError, "hard-link aliases"):
             self.journal.checkpoint(second_job, 0, "ocr", alias)
-        self.assertEqual(self.journal.resumable_pages(first_job, "ocr"), [0])
+        self.assertEqual(self.journal.resumable_pages(first_job, "ocr"), [])
         self.assertEqual(self.journal.resumable_pages(second_job, "ocr"), [])
+        alias.unlink()
+        self.assertEqual(self.journal.resumable_pages(first_job, "ocr"), [0])
 
     def test_replaced_checkpoint_path_with_identical_bytes_is_not_trusted(self):
         job = self.journal.create_job(self.original, self.output, 2)
