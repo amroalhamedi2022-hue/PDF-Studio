@@ -13,7 +13,7 @@ import os
 import time
 from pathlib import Path
 
-from .jobs import sha256_file
+from .jobs import sha256_file, sha256_file_before_deadline
 from .windows_job import WindowsJob, WindowsJobError
 
 
@@ -215,7 +215,15 @@ def inspect_pdf(source: str | Path, *, password: str | None = None,
             raise DocumentInspectionError("isolated inspection worker did not exit cleanly")
         if time.monotonic() >= deadline:
             raise DocumentInspectionError("isolated PDF inspection timed out")
-        if sha256_file(src) != result.sha256:
+        try:
+            verified_digest = sha256_file_before_deadline(src, deadline)
+        except TimeoutError as exc:
+            raise DocumentInspectionError(
+                "isolated PDF inspection timed out during source verification"
+            ) from exc
+        except OSError as exc:
+            raise DocumentInspectionError("PDF changed during inspection") from exc
+        if verified_digest != result.sha256:
             raise DocumentInspectionError("PDF changed during inspection")
         if time.monotonic() >= deadline:
             raise DocumentInspectionError("isolated PDF inspection timed out")
