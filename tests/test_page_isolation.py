@@ -275,7 +275,8 @@ class IsolatedPageToolTests(unittest.TestCase):
 
     def test_publication_cleanup_does_not_delete_destination_replaced_after_identity_check(self):
         real_link = os.link
-        real_lstat = Path.lstat
+        path_type = type(self.out)
+        real_lstat = path_type.lstat
         alias = self.root / "external-stage-alias.bin"
         displaced = self.root / "displaced-publication-inode.bin"
         sentinel = b"owned by concurrent destination creator"
@@ -302,7 +303,7 @@ class IsolatedPageToolTests(unittest.TestCase):
             return info
 
         with mock.patch("pdfstudio.page_isolation.os.link", side_effect=alias_then_publish):
-            with mock.patch("pdfstudio.page_isolation.Path.lstat", new=lstat_with_path_replacement):
+            with mock.patch.object(path_type, "lstat", new=lstat_with_path_replacement):
                 with self.assertRaisesRegex(PageToolError, "published PDF identity or hard-link count changed"):
                     extract_pages(self.a, self.out, "1")
 
