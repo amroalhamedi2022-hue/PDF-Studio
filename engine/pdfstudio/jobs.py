@@ -517,7 +517,27 @@ class JobJournal:
             self.verify_source(job_id)
         else:
             self._assert_source_fingerprint(job["source"], source_fingerprint)
-        file = Path(artifact).resolve(strict=True)
+        requested_file = Path(artifact)
+        requested_info = requested_file.lstat()
+        if stat.S_ISLNK(requested_info.st_mode) or self._is_reparse_point(requested_info):
+            raise JobSafetyError(
+                "checkpoint artifact path must not be a symlink or reparse point"
+            )
+        if not stat.S_ISREG(requested_info.st_mode):
+            raise JobSafetyError("artifact must be a file")
+
+        # Do not resolve away a caller-supplied symlink before checking it.
+        # Compare the original entry with the canonical path so a replacement
+        # during resolution fails closed instead of silently registering a target.
+        file = requested_file.resolve(strict=True)
+        resolved_info = file.lstat()
+        if (
+            not stat.S_ISREG(resolved_info.st_mode)
+            or self._is_reparse_point(resolved_info)
+            or self._artifact_stat_fingerprint(requested_info)
+            != self._artifact_stat_fingerprint(resolved_info)
+        ):
+            raise JobSafetyError("checkpoint artifact changed while resolving its path")
         if file == Path(job["source"]) or file == Path(job["output"]):
             raise JobSafetyError("artifact may not be the original or final PDF")
         if not file.is_file():
