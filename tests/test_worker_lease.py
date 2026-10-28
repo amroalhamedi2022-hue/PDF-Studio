@@ -157,6 +157,20 @@ class WorkerLeaseTests(unittest.TestCase):
         self.assertEqual(snapshot["valid_pages"], ())
         self.assertEqual(snapshot["invalid_pages"], (0,))
 
+    def test_checkpoint_registration_rejects_symlink_path_before_resolution(self):
+        target = self.root / "page-target.txt"
+        alias = self.root / "page-symlink.txt"
+        target.write_text("immutable checkpoint", encoding="utf-8")
+        self._symlink_or_skip(alias, target)
+
+        with self.journal.worker_session(self.job) as owner:
+            with self.assertRaisesRegex(JobSafetyError, "symlink or reparse point"):
+                owner.checkpoint(0, "ocr", alias)
+
+        self.assertTrue(alias.is_symlink())
+        self.assertEqual(target.read_text(encoding="utf-8"), "immutable checkpoint")
+        self.assertEqual(self.journal.recovery_snapshot(self.job, "ocr")["valid_pages"], ())
+
     def test_checkpoint_registration_rejects_hard_link_alias(self):
         page = self.root / "page.txt"
         alias = self.root / "page-alias.txt"
