@@ -273,44 +273,34 @@ class IsolatedPageToolTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
         self.assertTrue(alias.is_file())
 
-    def test_publication_cleanup_does_not_delete_destination_replaced_after_identity_check(self):
+    def test_publication_failure_never_unlinks_caller_destination_by_path(self):
         real_link = os.link
-        path_type = type(self.out)
-        real_lstat = path_type.lstat
+        real_unlink = os.unlink
         alias = self.root / "external-stage-alias.bin"
-        displaced = self.root / "displaced-publication-inode.bin"
-        sentinel = b"owned by concurrent destination creator"
-        publication_complete = False
-        replacement_done = False
 
         def alias_then_publish(staged, destination):
-            nonlocal publication_complete
             real_link(staged, alias)
-            result = real_link(staged, destination)
-            publication_complete = True
-            return result
+            return real_link(staged, destination)
 
-        def lstat_with_path_replacement(path):
-            nonlocal replacement_done
-            info = real_lstat(path)
-            if publication_complete and not replacement_done and Path(path) == self.out:
-                # Return the inode observed by the caller, but replace the
-                # pathname before its later cleanup action. This deterministically
-                # models the check-then-unlink race.
-                replacement_done = True
-                Path(path).rename(displaced)
-                Path(path).write_bytes(sentinel)
-            return info
+        def forbid_caller_output_unlink(path, *args, **kwargs):
+            # A path check followed by unlink is not atomic: another process
+            # can replace the destination between them. Failed publication
+            # must never attempt this destructive cleanup by caller-visible name.
+            if Path(path) == self.out:
+                raise AssertionError("unsafe check-then-unlink of caller destination")
+            return real_unlink(path, *args, **kwargs)
 
         with mock.patch("pdfstudio.page_isolation.os.link", side_effect=alias_then_publish):
-            with mock.patch.object(path_type, "lstat", new=lstat_with_path_replacement):
+            with mock.patch("pdfstudio.page_isolation.os.unlink", new=forbid_caller_output_unlink):
                 with self.assertRaisesRegex(PageToolError, "published PDF identity or hard-link count changed"):
                     extract_pages(self.a, self.out, "1")
 
-        self.assertTrue(replacement_done)
-        self.assertEqual(self.out.read_bytes(), sentinel)
-        self.assertTrue(displaced.is_file())
+        # Failure is explicit, but the output path can remain and is unverified.
+        self.assertTrue(self.out.is_file())
         self.assertTrue(alias.is_file())
+        self.assertEqual((self.out.stat().st_dev, self.out.stat().st_ino),
+                         (alias.stat().st_dev, alias.stat().st_ino))
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
     def test_failed_parent_publication_leaves_no_output_or_staging(self):
         with mock.patch("pdfstudio.page_isolation.os.link",
