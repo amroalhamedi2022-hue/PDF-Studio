@@ -82,8 +82,9 @@ def _reserve_staging_file(path: Path, estimated_output_bytes: int) -> tuple[int,
     expected_identity: tuple[int, int] | None = None
     try:
         opened_info = os.fstat(fd)
-        if not stat.S_ISREG(opened_info.st_mode):
-            raise OSError("reserved staging descriptor is not a regular file")
+        if (not stat.S_ISREG(opened_info.st_mode)
+                or getattr(opened_info, "st_nlink", 1) != 1):
+            raise OSError("reserved staging descriptor has hard-link aliases or is not regular")
         expected_identity = (opened_info.st_dev, opened_info.st_ino)
 
         if os.name == "posix":
@@ -99,17 +100,19 @@ def _reserve_staging_file(path: Path, estimated_output_bytes: int) -> tuple[int,
         os.fsync(fd)
         descriptor_info = os.fstat(fd)
         if ((descriptor_info.st_dev, descriptor_info.st_ino) != expected_identity
+                or getattr(descriptor_info, "st_nlink", 1) != 1
                 or descriptor_info.st_size != estimated_output_bytes):
-            raise OSError("reserved staging descriptor changed during allocation")
+            raise OSError("reserved staging descriptor changed or gained hard-link aliases")
 
         # Check the pathname too: a same-user process may have replaced it while
         # the descriptor was being allocated. The open descriptor alone cannot
         # prove that the caller-visible staging path still names our inode.
         path_info = path.lstat()
         if (not stat.S_ISREG(path_info.st_mode)
+                or getattr(path_info, "st_nlink", 1) != 1
                 or (path_info.st_dev, path_info.st_ino) != expected_identity
                 or path_info.st_size != estimated_output_bytes):
-            raise OSError("reserved staging path changed during allocation")
+            raise OSError("reserved staging path changed or gained hard-link aliases")
     except BaseException as exc:
         try:
             os.close(fd)
@@ -133,12 +136,15 @@ def _reserve_staging_file(path: Path, estimated_output_bytes: int) -> tuple[int,
 
 
 def _verify_staging_file(path: Path, expected_identity: tuple[int, int],
-                         max_output_bytes: int) -> None:
-    """Reject replaced, linked, non-regular, oversized, or non-PDF staging output.
+                         max_output_bytes: int, *,
+                         expected_link_count: int = 1) -> None:
+    """Reject replaced, aliased, non-regular, oversized, or non-PDF staging output.
 
-    The worker must exit before this check. Identity is captured from the
-    parent's preallocated inode, so a worker that replaces result.pdf with a
-    symlink or a different file cannot trick the parent into publishing it.
+    Before publication the private staging inode must have exactly one link.
+    After atomic publication it must have exactly two: the staging name and
+    the caller-visible destination. The worker must exit before this check.
+    Identity is captured from the parent's preallocated inode, so a worker
+    cannot replace result.pdf with another file and trick the parent.
     """
     from .page_tools import PageToolError
 
@@ -149,6 +155,8 @@ def _verify_staging_file(path: Path, expected_identity: tuple[int, int],
     if (not stat.S_ISREG(path_info.st_mode)
             or (path_info.st_dev, path_info.st_ino) != expected_identity):
         raise PageToolError("staged PDF identity changed; refusing publication")
+    if getattr(path_info, "st_nlink", 1) != expected_link_count:
+        raise PageToolError("staged PDF has unexpected hard-link aliases; refusing publication")
     if path_info.st_size < 5 or path_info.st_size > max_output_bytes:
         raise PageToolError("staged PDF size is invalid; refusing publication")
 
@@ -161,18 +169,20 @@ def _verify_staging_file(path: Path, expected_identity: tuple[int, int],
         opened_info = os.fstat(fd)
         if (not stat.S_ISREG(opened_info.st_mode)
                 or (opened_info.st_dev, opened_info.st_ino) != expected_identity
+                or getattr(opened_info, "st_nlink", 1) != expected_link_count
                 or opened_info.st_size != path_info.st_size
                 or opened_info.st_size < 5
                 or opened_info.st_size > max_output_bytes):
-            raise PageToolError("staged PDF changed during validation")
+            raise PageToolError("staged PDF changed or gained hard-link aliases during validation")
         with os.fdopen(fd, "rb", closefd=False) as stream:
             if stream.read(5) != b"%PDF-":
                 raise PageToolError("staged output has no PDF header")
         after_info = os.fstat(fd)
         if ((after_info.st_dev, after_info.st_ino) != expected_identity
+                or getattr(after_info, "st_nlink", 1) != expected_link_count
                 or after_info.st_size != opened_info.st_size
                 or after_info.st_mtime_ns != opened_info.st_mtime_ns):
-            raise PageToolError("staged PDF changed during validation")
+            raise PageToolError("staged PDF changed or gained hard-link aliases during validation")
     finally:
         os.close(fd)
 
@@ -204,21 +214,29 @@ def _publish_verified_staging_file(staged: Path, destination: Path,
 
     published_identity = (published_info.st_dev, published_info.st_ino)
     staging_identity = (staged_info.st_dev, staged_info.st_ino)
-    if not stat.S_ISREG(published_info.st_mode) or published_identity != expected_identity:
-        # We may remove only the link this call just created: destination and
-        # current staging path must still identify the same unexpected inode.
-        # If another actor replaced destination independently, leave it alone.
-        if published_identity == staging_identity and published_identity != expected_identity:
+    if (not stat.S_ISREG(published_info.st_mode)
+            or published_identity != expected_identity
+            or staging_identity != expected_identity
+            or getattr(published_info, "st_nlink", 1) != 2
+            or getattr(staged_info, "st_nlink", 1) != 2):
+        # os.link succeeded above, so remove the destination only while it
+        # still aliases this operation's staging inode. Never unlink a
+        # different racing output that replaced the caller-visible path.
+        if published_identity == expected_identity or (
+                published_identity == staging_identity and published_identity != expected_identity):
             try:
                 destination.unlink()
             except OSError:
                 pass
-        raise PageToolError("published PDF identity changed; refusing publication")
+        raise PageToolError("published PDF identity or hard-link count changed; refusing publication")
 
-    # Validate the caller-visible path itself, not only the temporary name.
-    # This also rechecks the PDF header, size cap, and metadata stability.
+    # Validate both caller-visible and staging paths. Exactly two links are
+    # expected now; any third link can mutate the output through an alias.
     try:
-        _verify_staging_file(destination, expected_identity, max_output_bytes)
+        _verify_staging_file(staged, expected_identity, max_output_bytes,
+                             expected_link_count=2)
+        _verify_staging_file(destination, expected_identity, max_output_bytes,
+                             expected_link_count=2)
     except PageToolError:
         try:
             current = destination.lstat()
