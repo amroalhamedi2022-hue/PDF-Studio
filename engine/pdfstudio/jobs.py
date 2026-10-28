@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import time
 from contextlib import contextmanager
 from typing import Iterator
 import sqlite3
@@ -46,6 +47,30 @@ def sha256_file(path: str | Path, chunk_bytes: int = 1024 * 1024) -> str:
     with Path(path).open("rb") as stream:
         for block in iter(lambda: stream.read(chunk_bytes), b""):
             result.update(block)
+    return result.hexdigest()
+
+def sha256_file_before_deadline(path: str | Path, deadline: float,
+                                chunk_bytes: int = 1024 * 1024) -> str:
+    """Stream a file hash while enforcing an absolute monotonic deadline.
+
+    The deadline is checked before and after each blocking read. This cannot
+    interrupt a kernel/filesystem read already in progress, but it prevents
+    an arbitrarily long multi-chunk verification from silently exceeding the
+    caller's operation budget.
+    """
+    if chunk_bytes < 1:
+        raise ValueError("chunk_bytes must be positive")
+    result = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("PDF operation deadline exceeded during source hashing")
+            block = stream.read(chunk_bytes)
+            if not block:
+                break
+            result.update(block)
+    if time.monotonic() >= deadline:
+        raise TimeoutError("PDF operation deadline exceeded during source hashing")
     return result.hexdigest()
 
 
