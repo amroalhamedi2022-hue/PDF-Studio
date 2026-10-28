@@ -822,3 +822,20 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Still NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scans, OS-reboot recovery, hostile-PDF OS sandboxing, Android SAF/UI/device, Windows GUI/EXE/device, and full F01–F10 acceptance. F04.03 remains IN PROGRESS; B01 remains OPEN / PARTIAL.
 - **Google Drive Handoff:** `PDF Studio — HANDOFF` sync remains **FAILED / NOT AVAILABLE** because this runtime has no Google Docs/Drive write connector. The specified Drive document was not updated; no sync success is claimed.
 - No paid tools/runners, private user PDFs, secrets, merge, auto-merge, or `main` changes.
+
+
+## 2026-10-28 follow-up — require active worker ownership for running-job mutations (B01 remains OPEN)
+
+- **Risk addressed:** a caller could previously transition a fresh journal row to `running` or attempt a checkpoint mutation without entering `worker_session()`. The lease mechanism already rejected legacy running jobs with no ownership history when claiming a worker, but the public mutation methods did not consistently enforce that boundary.
+- **Production + lease regression tests:** [`c02d39e976d974af1f71673044f690e46d813ab6`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/c02d39e976d974af1f71673044f690e46d813ab6).
+  - `set_state()` now requires an active owner token when entering or mutating `running` state.
+  - `checkpoint()` requires an active worker owner even if a caller omits `worker_token`; an unowned legacy running row cannot publish new artifacts.
+  - Pending-job cancellation remains available without a worker lease; normal processing/resume remains through `WorkerSession`, with its persistent OS lock and SQLite fencing token.
+- **Fixture migration:** [`51ec2bf238ee3bd62fb969e3bb5d7dd030670096`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/51ec2bf238ee3bd62fb969e3bb5d7dd030670096) updates legacy foundation tests to exercise checkpoint mutations under a real `worker_session()`. Tests that intentionally model a crashed/legacy `running` row now alter the test SQLite fixture directly rather than using the public API to create an unsafe state.
+- **Initial failure and correction:** [run #40640204375](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40640204375) failed on Ubuntu and Windows because eight older tests still used public `set_state(job, "running")` to manufacture running fixtures. This exposed test-contract drift after the stricter invariant; the fixtures were migrated, not the production guard rolled back.
+- **Exact code/test CI:** [run #40640619439 — PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40640619439), Ubuntu + Windows, **183 tests per host**; Ubuntu skipped six platform-specific cases. The new `test_unowned_jobs_cannot_start_or_mutate_running_state` and legacy-running ownership test passed on both hosts.
+- **Scope/limits:** the lock is a same-host cooperative lock, not a distributed lock or OS sandbox. The recovery snapshot remains read-only and still does not authorize resume until worker quiescence is independently established. Existing 100/1000/5000-page and 64 MiB evidence remains synthetic/born-digital; it is not real OCR or a realistic >=2 GiB scan.
+- **Build decision:** no APK/EXE build. This is a Python/SQLite ownership contract directly exercised by source tests on both host OSes; packaging would not provide stronger evidence.
+- **Still NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scanned PDFs, OS-reboot recovery, hostile-PDF sandboxing, Android SAF/UI/device, Windows GUI/EXE/device and full F01–F10 acceptance. **B01 remains OPEN / PARTIAL; B02 remains closed.**
+- **Google Drive Handoff:** `PDF Studio — HANDOFF` sync remains **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The specified Drive document was not updated; no sync success is claimed.
+- No paid tools/runners, private user PDFs, secrets, merge, auto-merge or `main` changes.

@@ -157,3 +157,19 @@ A stored checkpoint is no longer accepted solely because its current bytes match
 - Exact CI [#40634167667 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40634167667): **180 tests per host** on Ubuntu and Windows; six Windows/platform-specific skips on Ubuntu. Duplicate [#40634161340 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40634161340) passed the same head. Existing 100/1000/5000-page and 64 MiB smoke checks passed; large-page fixtures are synthetic born-digital data, not OCR or realistic >=2 GiB scans.
 - **Build:** no APK/EXE; this is a Python timeout contract directly tested on both host OSes. OCR, realistic huge scans, reboot recovery, full sandboxing, Android/Windows GUI/device acceptance and complete F01–F10 remain **NOT TESTED**. Keep B01 OPEN and B02 closed.
 - Google Drive `PDF Studio — HANDOFF` sync is **FAILED / NOT AVAILABLE** because no Docs/Drive write connector is exposed; the named document was not updated.
+
+
+## 2026-10-28 — B01 worker ownership mutation gate
+
+| Gate | Result | Evidence / limit |
+|---|---|---|
+| Reject unowned `pending → running` transition | PASS | Production + regression tests in [commit c02d39e](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/c02d39e976d974af1f71673044f690e46d813ab6) |
+| Reject checkpoint writes without an active worker token | PASS | `test_unowned_jobs_cannot_start_or_mutate_running_state` |
+| Preserve legacy interrupted-row audit without authorizing resume | PASS | `worker_session` ownership fence; read-only recovery snapshot remains non-authorizing |
+| Cross-platform source tests | PASS | [CI #40640619439](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40640619439): 183 tests on Ubuntu and Windows; Ubuntu skips six platform-specific cases |
+| Initial legacy-fixture compatibility | Corrected | [CI #40640204375](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40640204375) exposed eight tests creating a running row through the public API; fixture migration in [commit 51ec2bf](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/51ec2bf238ee3bd62fb969e3bb5d7dd030670096) now uses real worker sessions for normal operations and direct SQLite fixture mutation only to model an interrupted legacy row |
+| Real Arabic/English OCR and searchable overlay | NOT TESTED | No OCR engine acceptance claim |
+| Realistic >=2 GiB scanned PDF / reboot recovery / hostile-input OS sandbox | NOT TESTED | Existing scale tests are synthetic, born-digital and do not establish these gates |
+| Android SAF/UI/device and Windows GUI/EXE/device | NOT TESTED | No APK/EXE build was useful for this Python/SQLite contract |
+
+B01 remains **OPEN / PARTIAL**; B02 remains closed. Google Drive `PDF Studio — HANDOFF` synchronization is **FAILED / NOT AVAILABLE** because no Docs/Drive write connector is exposed in this runtime; the named document was not updated.
