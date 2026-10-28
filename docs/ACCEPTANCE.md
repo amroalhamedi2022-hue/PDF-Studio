@@ -184,3 +184,16 @@ B01 remains **OPEN / PARTIAL**; B02 remains closed. Google Drive `PDF Studio —
 - **Build decision:** no APK/EXE build. This change is a Python/SQLite checkpoint-registration contract directly exercised by source tests on Ubuntu and Windows; packaging would not answer a stronger test question.
 - **Google Drive Handoff:** `PDF Studio — HANDOFF` sync is **FAILED / NOT AVAILABLE** because no Google Docs/Drive write connector is exposed in this runtime. The specified Drive document was not updated; no successful sync is claimed.
 - No paid runners/APIs, private user PDFs, secrets, merge, auto-merge or `main` changes.
+
+
+## 2026-10-28 — native-text character budget is job-wide across resume (B01 remains OPEN / PARTIAL)
+
+- **Defect:** max_total_chars was applied only to pages missing in the current parser invocation. A resumed job could therefore commit text beyond the configured job-wide total by ignoring text already stored in valid SQLite checkpoints.
+- **Production fix:** [commit 9ceeb8bf7efd1c8220d6d9782b7a8df0b0650b51](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/9ceeb8bf7efd1c8220d6d9782b7a8df0b0650b51) counts existing verified UTF-8 checkpoint text in bounded 64 KiB chunks, re-verifies each checkpoint after reading, subtracts those characters from the parser's remaining budget, validates caps even when no pages need parsing, and enforces a parent-side per-page/total check before checkpoint publication.
+- **Regression:** [final fixture/test commit 6fee60e1464e421e078da6079eb29f7607fef719](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/6fee60e1464e421e078da6079eb29f7607fef719) uses a 20-character committed page and two 14-character missing pages under a 25-character total cap; resume must not publish a second page. Two earlier CI attempts exposed test-fixture cancellation timing mistakes; the corrected exact-head run below is the accepted result.
+- **Exact code/test CI:** [run #40656572577 — PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40656572577), **187 tests on Windows and 187 on Ubuntu** (Ubuntu skips six Windows/platform-specific cases).
+- **Resource evidence:** the same run passed the 100-page smoke and 64 MiB disk-backed output checks on both OSes, plus Linux 1,000/5,000-page synthetic checkpoint/resume and FTS integrity. The 5,000-page fixture is a 2.64 MB born-digital synthetic PDF; it is not OCR or a realistic >=2 GiB scanned document.
+- **Build decision:** no APK/EXE build. The changed contract is Python/SQLite and is directly exercised by cross-platform source tests; packaging would not answer a stronger test question.
+- **Acceptance unchanged:** real Arabic/English OCR, realistic >=2 GiB scans, OS-reboot recovery, hostile-PDF OS sandboxing, Android SAF/UI/device, Windows GUI/EXE/device, and complete F01–F10 remain **NOT TESTED**. F04.03 remains IN PROGRESS; B01 remains OPEN / PARTIAL; B02 stays closed.
+- **Google Drive Handoff:** sync is **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The specified PDF Studio HANDOFF document was not updated; no sync success is claimed.
+- No paid APIs/runners, user PDFs, secrets, merge, auto-merge or main changes.

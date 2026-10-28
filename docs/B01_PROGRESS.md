@@ -848,3 +848,15 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Build decision:** no APK/EXE. This is a Python deadline/error-contract change directly exercised on both host OSes; packaging would not answer a stronger question.
 - **Acceptance status unchanged:** F04.03 remains IN PROGRESS; B01 remains OPEN / PARTIAL and B02 remains closed. Real Arabic/English OCR, realistic >=2 GiB scanned PDFs, OS-reboot recovery, hostile-input OS sandbox, Android SAF/UI/device, Windows GUI/EXE/device and full F01–F10 remain NOT TESTED. The 5,000-page fixture is 2.64 MB synthetic born-digital data, not a scanned/OCR corpus.
 - **Google Drive Handoff:** `PDF Studio — HANDOFF` synchronization is FAILED / NOT AVAILABLE because no Google Docs/Drive write connector is exposed in this runtime. The named Drive document was not updated; no sync success is claimed. No paid tools/runners, user PDFs, secrets, merge, auto-merge or `main` changes.
+
+
+## 2026-10-28 — resume-safe job-wide native-text budget
+
+- **Active milestone:** B01 — Resource-Bounded PDF Core & Output Integrity (**OPEN / PARTIAL**); B02 remains closed.
+- **Production:** [9ceeb8bf7efd1c8220d6d9782b7a8df0b0650b51](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/9ceeb8bf7efd1c8220d6d9782b7a8df0b0650b51) makes max_total_chars apply across all verified native-text checkpoints, not only pages parsed in the current invocation. It counts UTF-8 characters incrementally, rechecks checkpoint integrity after reading, passes the remaining budget into the isolated parser, and checks the cumulative total again before publishing each new checkpoint.
+- **Regression:** [6fee60e1464e421e078da6079eb29f7607fef719](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/6fee60e1464e421e078da6079eb29f7607fef719). A 20-character existing checkpoint plus 14-character missing pages under a 25-character cap must not commit a second page on resume.
+- **Final exact-head CI:** [#40656572577 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40656572577) — 187 tests on Ubuntu and Windows; Ubuntu skips six platform-specific tests. The run also passed 100-page and 64 MiB disk-backed checks on both hosts, plus Linux 1,000/5,000-page synthetic checkpoint/resume and FTS integrity.
+- **Evidence boundary:** 5,000 pages were generated from a 2.64 MB born-digital synthetic PDF; no OCR, realistic >=2 GiB scan, OS reboot, hostile-input sandbox, Android SAF/device, Windows GUI/EXE or full F01–F10 acceptance is implied.
+- **Build decision:** no APK/EXE; source tests directly exercise this Python/SQLite budget contract on both OSes.
+- **Google Drive Handoff:** **FAILED / NOT AVAILABLE**; no Docs/Drive write connector is exposed, so the named Drive document was not updated.
+- **Next:** continue B01 recovery/output-integrity and realistic-resource gates; do not open B02 until B01 acceptance is evidenced.
