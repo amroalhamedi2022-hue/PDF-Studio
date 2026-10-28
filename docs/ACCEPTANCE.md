@@ -238,6 +238,11 @@ B01 remains **OPEN / PARTIAL**; B02 remains closed. Google Drive `PDF Studio —
 - No merge, auto-merge, `main` edits, paid APIs/runners, user PDFs or secrets.
 
 
-## 2026-10-28 B01 output-cleanup regression follow-up
+## 2026-10-28 B01 publication-cleanup regression follow-up
 
-The parent-side publication cleanup now removes the destination only if its current inode still matches the inode reserved by the operation. A deterministic same-user path-replacement regression checks that a concurrent owner's sentinel output is preserved when both visible paths are replaced. Source/test commit: [`bd93b442f2f8bba11b610f083a814817457cfb31`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/bd93b442f2f8bba11b610f083a814817457cfb31). Exact CI: [run #40709389046](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40709389046) — pending at the time of this note; acceptance must remain IN PROGRESS until Ubuntu and Windows complete. This regression does not establish resistance to every same-user filesystem race, an OS sandbox, OCR, realistic >=2 GiB files, or platform/device acceptance. B01 remains OPEN / PARTIAL; B02 stays closed.
+Parent publication cleanup is conservative: it removes the destination only when the current inode still matches the inode reserved by the operation. If a path race leaves an inode whose ownership cannot be proven, the operation raises an error and preserves that path rather than deleting a concurrent owner's file; the caller must treat it as **unverified**, not as a successful export.
+
+- Initial regression CI [#40709389046](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40709389046) failed on Ubuntu and exposed the cleanup bug plus an outdated expectation in the pre-existing staging-replacement test.
+- Corrected source/test head: [`187104caa0e3268cb496836b970bdca4962d1c42`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/187104caa0e3268cb496836b970bdca4962d1c42).
+- Exact CI [#40709973619](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40709973619): Ubuntu **PASS** (194 tests, six platform-specific skips); 100/1000/5000-page synthetic and 64 MiB disk-backed checks passed on Linux. Windows remained **QUEUED** at this checkpoint, so cross-platform status is not yet PASS.
+- This test does not prove resistance to every same-user filesystem race, OS sandboxing, OCR, realistic >=2 GiB files, or platform/device acceptance. F04.05 remains IN PROGRESS; B01 remains OPEN / PARTIAL; B02 stays closed.
