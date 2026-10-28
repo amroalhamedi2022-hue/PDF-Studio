@@ -120,19 +120,18 @@ class JournalTests(unittest.TestCase):
 
     def test_checkpoint_and_resumption_verifies_output(self):
         job = self.journal.create_job(self.original, self.output, 3)
-        self.journal.set_state(job, "running")
         artifact = self.root / "page0.txt"
-        artifact.write_text("recognized text")
-        self.journal.checkpoint(job, 0, "ocr", artifact)
-        self.assertEqual(self.journal.resumable_pages(job, "ocr"), [0])
-        artifact.write_text("damaged")
-        self.assertEqual(self.journal.resumable_pages(job, "ocr"), [])
-        with self.assertRaisesRegex(JobSafetyError, "immutable"):
-            self.journal.checkpoint(job, 0, "ocr", artifact)
-        corrected = self.root / "page0-corrected.txt"
-        corrected.write_text("corrected")
-        self.journal.checkpoint(job, 0, "ocr", corrected)
-        self.journal.set_state(job, "paused")
+        with self.journal.worker_session(job) as owner:
+            artifact.write_text("recognized text")
+            owner.checkpoint(0, "ocr", artifact)
+            self.assertEqual(self.journal.resumable_pages(job, "ocr"), [0])
+            artifact.write_text("damaged")
+            self.assertEqual(self.journal.resumable_pages(job, "ocr"), [])
+            with self.assertRaisesRegex(JobSafetyError, "immutable"):
+                owner.checkpoint(0, "ocr", artifact)
+            corrected = self.root / "page0-corrected.txt"
+            corrected.write_text("corrected")
+            owner.checkpoint(0, "ocr", corrected)
         self.assertEqual(JobJournal(self.root / "jobs.sqlite").resumable_pages(job, "ocr"), [0])
 
     def test_checkpoint_hardlink_identity_cannot_be_reused(self):
@@ -140,60 +139,59 @@ class JournalTests(unittest.TestCase):
         second_job = self.journal.create_job(
             self.original, self.root / "second-output.pdf", 1
         )
-        self.journal.set_state(first_job, "running")
-        self.journal.set_state(second_job, "running")
         artifact = self.root / "checkpoint-page.txt"
         alias = self.root / "checkpoint-page-hardlink.txt"
         artifact.write_text("immutable checkpoint bytes", encoding="utf-8")
-        # Register a clean single-link checkpoint first. Creating an alias later
-        # must invalidate that checkpoint while the alias exists, and the alias
-        # itself must never be registered for either job.
-        self.journal.checkpoint(first_job, 0, "ocr", artifact)
-        try:
-            os.link(artifact, alias)
-        except (OSError, NotImplementedError) as exc:
-            self.skipTest(f"hard links unavailable on this filesystem: {exc}")
+        with self.journal.worker_session(first_job) as first_owner, self.journal.worker_session(second_job) as second_owner:
+            # Register a clean single-link checkpoint first. Creating an alias
+            # later must invalidate it, and the alias itself must never be
+            # registered for either job.
+            first_owner.checkpoint(0, "ocr", artifact)
+            try:
+                os.link(artifact, alias)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"hard links unavailable on this filesystem: {exc}")
 
-        with self.assertRaisesRegex(JobSafetyError, "hard-link aliases"):
-            self.journal.checkpoint(first_job, 1, "ocr", alias)
-        with self.assertRaisesRegex(JobSafetyError, "hard-link aliases"):
-            self.journal.checkpoint(second_job, 0, "ocr", alias)
-        self.assertEqual(self.journal.resumable_pages(first_job, "ocr"), [])
-        self.assertEqual(self.journal.resumable_pages(second_job, "ocr"), [])
-        alias.unlink()
-        self.assertEqual(self.journal.resumable_pages(first_job, "ocr"), [0])
+            with self.assertRaisesRegex(JobSafetyError, "hard-link aliases"):
+                first_owner.checkpoint(1, "ocr", alias)
+            with self.assertRaisesRegex(JobSafetyError, "hard-link aliases"):
+                second_owner.checkpoint(0, "ocr", alias)
+            self.assertEqual(self.journal.resumable_pages(first_job, "ocr"), [])
+            self.assertEqual(self.journal.resumable_pages(second_job, "ocr"), [])
+            alias.unlink()
+            self.assertEqual(self.journal.resumable_pages(first_job, "ocr"), [0])
 
     def test_replaced_checkpoint_path_with_identical_bytes_is_not_trusted(self):
         job = self.journal.create_job(self.original, self.output, 2)
-        self.journal.set_state(job, "running")
         artifact = self.root / "checkpoint-page.txt"
         replacement = self.root / "replacement-page.txt"
         payload = b"same bytes, different file identity"
-        artifact.write_bytes(payload)
-        self.journal.checkpoint(job, 0, "ocr", artifact)
-        recorded_identity = self.journal._artifact_identity(artifact)
-        if recorded_identity is None:
-            self.skipTest("filesystem does not expose a useful inode identity")
+        with self.journal.worker_session(job) as owner:
+            artifact.write_bytes(payload)
+            owner.checkpoint(0, "ocr", artifact)
+            recorded_identity = self.journal._artifact_identity(artifact)
+            if recorded_identity is None:
+                self.skipTest("filesystem does not expose a useful inode identity")
 
-        replacement.write_bytes(payload)
-        replacement_identity = self.journal._artifact_identity(replacement)
-        if replacement_identity is None or replacement_identity == recorded_identity:
-            self.skipTest("filesystem cannot distinguish the replacement file identity")
-        expected_digest = sha256_file(artifact)
-        os.replace(replacement, artifact)
-        self.assertEqual(sha256_file(artifact), expected_digest)
-        self.assertNotEqual(self.journal._artifact_identity(artifact), recorded_identity)
+            replacement.write_bytes(payload)
+            replacement_identity = self.journal._artifact_identity(replacement)
+            if replacement_identity is None or replacement_identity == recorded_identity:
+                self.skipTest("filesystem cannot distinguish the replacement file identity")
+            expected_digest = sha256_file(artifact)
+            os.replace(replacement, artifact)
+            self.assertEqual(sha256_file(artifact), expected_digest)
+            self.assertNotEqual(self.journal._artifact_identity(artifact), recorded_identity)
 
-        # A byte-identical replacement must not be mistaken for the original
-        # immutable checkpoint merely because its SHA-256 still matches.
-        self.assertFalse(self.journal.verified_checkpoint(job, 0, "ocr"))
-        self.assertEqual(self.journal.resumable_pages(job, "ocr"), [])
-        audit = self.journal.recovery_snapshot(job, "ocr")
-        self.assertEqual(audit["valid_pages"], ())
-        self.assertEqual(audit["invalid_pages"], (0,))
-        self.assertEqual(audit["missing_pages"], (0, 1))
-        with self.assertRaisesRegex(JobSafetyError, "identity changed"):
-            self.journal.checkpoint(job, 0, "ocr", artifact)
+            # A byte-identical replacement must not be mistaken for the original
+            # immutable checkpoint merely because its SHA-256 still matches.
+            self.assertFalse(self.journal.verified_checkpoint(job, 0, "ocr"))
+            self.assertEqual(self.journal.resumable_pages(job, "ocr"), [])
+            audit = self.journal.recovery_snapshot(job, "ocr")
+            self.assertEqual(audit["valid_pages"], ())
+            self.assertEqual(audit["invalid_pages"], (0,))
+            self.assertEqual(audit["missing_pages"], (0, 1))
+            with self.assertRaisesRegex(JobSafetyError, "identity changed"):
+                owner.checkpoint(0, "ocr", artifact)
 
     def test_create_job_rejects_source_mutation_during_digest_without_journaling(self):
         original = self.original.read_bytes()
@@ -224,35 +222,40 @@ class JournalTests(unittest.TestCase):
         job = self.journal.create_job(self.original, self.output, 2)
         with self.assertRaises(JobSafetyError):
             self.journal.set_state(job, "complete")
-        self.journal.set_state(job, "running")
         artifact = self.root / "artifact"
         artifact.write_bytes(b"data")
-        with self.assertRaises(ValueError):
-            self.journal.checkpoint(job, 2, "ocr", artifact)
-        with self.assertRaises(ValueError):
-            self.journal.checkpoint(job, 0, "invalid", artifact)
-        with self.assertRaises(JobSafetyError):
-            self.journal.checkpoint(job, 0, "ocr", self.original)
+        with self.journal.worker_session(job) as owner:
+            with self.assertRaises(ValueError):
+                owner.checkpoint(2, "ocr", artifact)
+            with self.assertRaises(ValueError):
+                owner.checkpoint(0, "invalid", artifact)
+            with self.assertRaises(JobSafetyError):
+                owner.checkpoint(0, "ocr", self.original)
 
     def test_cannot_resume_with_missing_artifact(self):
         job = self.journal.create_job(self.original, self.output, 1)
-        self.journal.set_state(job, "running")
         artifact = self.root / "artifact"
         artifact.write_text("hello")
-        self.journal.checkpoint(job, 0, "prepared", artifact)
-        artifact.unlink()
+        with self.journal.worker_session(job) as owner:
+            owner.checkpoint(0, "prepared", artifact)
+            artifact.unlink()
         self.assertEqual(self.journal.resumable_pages(job, "prepared"), [])
 
     def test_interrupted_recovery_audit_survives_restart_and_detects_damage(self):
         job = self.journal.create_job(self.original, self.output, 4)
-        self.journal.set_state(job, "running")
         good = self.root / "good.txt"
         damaged = self.root / "damaged.txt"
-        good.write_text("page zero")
-        damaged.write_text("page one")
-        self.journal.checkpoint(job, 0, "ocr", good)
-        self.journal.checkpoint(job, 1, "ocr", damaged)
-        damaged.write_text("corrupted after checkpoint")
+        with self.journal.worker_session(job) as owner:
+            good.write_text("page zero")
+            damaged.write_text("page one")
+            owner.checkpoint(0, "ocr", good)
+            owner.checkpoint(1, "ocr", damaged)
+            damaged.write_text("corrupted after checkpoint")
+
+        # Model an interrupted legacy/running row without acquiring or
+        # pretending to hold a worker lease; the recovery audit is read-only.
+        with self.journal._open() as db:
+            db.execute("UPDATE jobs SET state='running' WHERE job_id=?", (job,))
         reopened = JobJournal(self.root / "jobs.sqlite")
         audit = reopened.recovery_snapshot(job, "ocr")
         self.assertEqual(audit["state"], "running")
@@ -272,21 +275,21 @@ class JournalTests(unittest.TestCase):
 
     def test_recovery_rejects_out_of_range_checkpoint_rows(self):
         job = self.journal.create_job(self.original, self.output, 3)
-        self.journal.set_state(job, "running")
         good = self.root / "page0.txt"
         out_of_range = self.root / "orphan-page-99.txt"
         good.write_text("page zero", encoding="utf-8")
         out_of_range.write_text("not a page in this document", encoding="utf-8")
-        self.journal.checkpoint(job, 0, "ocr", good)
+        with self.journal.worker_session(job) as owner:
+            owner.checkpoint(0, "ocr", good)
 
-        # Simulate a malformed/legacy SQLite row that bypassed checkpoint().
-        # The schema only enforces page_index >= 0; recovery must also enforce
-        # the immutable page_count stored with the job.
-        with self.journal._open() as db:
-            db.execute(
-                "INSERT INTO checkpoints VALUES (?,?,?,?,?)",
-                (job, 99, "ocr", str(out_of_range), sha256_file(out_of_range)),
-            )
+            # Simulate a malformed/legacy SQLite row that bypassed checkpoint().
+            # The schema only enforces page_index >= 0; recovery must also enforce
+            # the immutable page_count stored with the job.
+            with self.journal._open() as db:
+                db.execute(
+                    "INSERT INTO checkpoints VALUES (?,?,?,?,?)",
+                    (job, 99, "ocr", str(out_of_range), sha256_file(out_of_range)),
+                )
 
         audit = self.journal.recovery_snapshot(job, "ocr")
         self.assertEqual(audit["valid_pages"], (0,))
@@ -298,8 +301,8 @@ class JournalTests(unittest.TestCase):
 
     def test_recovery_audit_is_read_only_for_paused_jobs(self):
         job = self.journal.create_job(self.original, self.output, 2)
-        self.journal.set_state(job, "running")
-        self.journal.set_state(job, "paused")
+        with self.journal.worker_session(job):
+            pass  # clean worker exit persists paused state
         audit = JobJournal(self.root / "jobs.sqlite").recovery_snapshot(job, "prepared")
         self.assertEqual(audit["valid_pages"], ())
         self.assertEqual(audit["missing_pages"], (0, 1))
