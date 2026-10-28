@@ -136,6 +136,36 @@ class NativeTextStageTests(unittest.TestCase):
         self.assertEqual(second["processed"], (1, 2))
         self.assertEqual(second["skipped"], (0,))
 
+    def test_total_character_cap_applies_across_resume(self):
+        polls = 0
+
+        def cancel_after_first_page():
+            nonlocal polls
+            polls += 1
+            return polls >= 3
+
+        first = run_native_text_stage(
+            self.journal, self.job, self.artifacts,
+            max_total_chars=25, cancel_requested=cancel_after_first_page,
+        )
+        self.assertEqual(first["processed"], (0,))
+        self.assertEqual(self.journal.recovery_snapshot(
+            self.job, "native_text"
+        )["valid_pages"], (0,))
+
+        # Page 0 already consumed 14 characters, leaving only 11. The next
+        # 14-character page must not be committed on resume, even though the
+        # parser's per-invocation total would otherwise allow two missing pages.
+        with self.assertRaises(ParserIsolationError):
+            run_native_text_stage(
+                self.journal, self.job, self.artifacts, max_total_chars=25,
+            )
+
+        snapshot = self.journal.recovery_snapshot(self.job, "native_text")
+        self.assertEqual(snapshot["valid_pages"], (0,))
+        self.assertEqual(snapshot["missing_pages"], (1, 2))
+        self.assertEqual(self.journal.get_job(self.job)["state"], "paused")
+
     def test_process_crash_keeps_verified_page_and_recovers(self):
         process = mp.get_context("spawn").Process(
             target=_crash_after_one_checkpoint,
