@@ -7,7 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pdfstudio.inspection import (DocumentInspectionError, inspect_pdf,\n                                  inspect_top_level_bookmark_starts)
+from pdfstudio.inspection import (DocumentInspectionError, inspect_pdf,
+                                  inspect_top_level_bookmark_starts)
 from pdfstudio.jobs import sha256_file_before_deadline
 from pdfstudio.windows_job import WindowsJobError
 from pypdf import PdfWriter
