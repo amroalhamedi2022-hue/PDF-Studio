@@ -236,3 +236,8 @@ B01 remains **OPEN / PARTIAL**; B02 remains closed. Google Drive `PDF Studio —
 - **Build decision:** no APK/EXE build; this is a Python filesystem-integrity contract directly exercised by cross-platform source tests, and packaging would not answer a stronger question.
 - **Google Drive Handoff:** **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The specified `PDF Studio — HANDOFF` document was not updated; no sync success is claimed.
 - No merge, auto-merge, `main` edits, paid APIs/runners, user PDFs or secrets.
+
+
+## 2026-10-28 B01 output-cleanup regression follow-up
+
+The parent-side publication cleanup now removes the destination only if its current inode still matches the inode reserved by the operation. A deterministic same-user path-replacement regression checks that a concurrent owner's sentinel output is preserved when both visible paths are replaced. Source/test commit: [`bd93b442f2f8bba11b610f083a814817457cfb31`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/bd93b442f2f8bba11b610f083a814817457cfb31). Exact CI: [run #40709389046](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40709389046) — pending at the time of this note; acceptance must remain IN PROGRESS until Ubuntu and Windows complete. This regression does not establish resistance to every same-user filesystem race, an OS sandbox, OCR, realistic >=2 GiB files, or platform/device acceptance. B01 remains OPEN / PARTIAL; B02 stays closed.

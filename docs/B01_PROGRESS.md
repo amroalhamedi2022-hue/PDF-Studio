@@ -899,3 +899,15 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 **Build/Handoff:** no APK/EXE build was useful for this Python filesystem contract. Google Drive `PDF Studio — HANDOFF` remains **FAILED / NOT AVAILABLE** because no Docs/Drive write connector is exposed in this runtime; the document was not updated.
 
 **Still open / NOT TESTED:** Arabic/English OCR; realistic massive scanned PDFs; OS-reboot recovery; hostile-PDF OS sandbox; Android SAF/UI/device; Windows GUI/EXE/device; complete F01–F10. Resume B01 from output integrity/resource and platform gates; do not open B02 until B01 acceptance is evidenced.
+
+
+## 2026-10-28 — preserve unrelated output during staging-path replacement (B01 remains OPEN / PARTIAL)
+
+- **Milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity`; B02 remains closed.
+- **Defect:** parent publication cleanup could unlink the destination if both the staging path and destination were replaced by a different inode during a same-user path race. In that case, matching the two *current* path identities did not prove the destination still belonged to this publication attempt.
+- **Production fix + regression:** [`bd93b442f2f8bba11b610f083a814817457cfb31`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/bd93b442f2f8bba11b610f083a814817457cfb31). Cleanup now unlinks only when the caller-visible destination still has the exact inode identity reserved by this operation; an unrelated replacement is preserved. The new race test replaces both visible paths with a sentinel inode and asserts that the output bytes survive the failed publication.
+- **Exact source/test CI:** [run #40709389046](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40709389046) was queued when this checkpoint was written; do not mark this fix PASS until that run completes successfully on Ubuntu and Windows.
+- **Build decision:** no APK/EXE build; this is a Python filesystem publication/cleanup contract directly tested by cross-platform source CI.
+- **Acceptance remains partial:** OCR Arabic/English, realistic >=2 GiB scans, OS-reboot recovery, hostile-input OS sandbox, Android SAF/UI/device, Windows GUI/EXE/device, and full F01–F10 remain NOT TESTED. Synthetic scale tests are not substitutes for these gates.
+- **Google Drive Handoff:** sync remains FAILED / NOT AVAILABLE in this runtime because no Google Docs/Drive write connector is exposed; the specified Drive document was not updated.
+- No merge, auto-merge, `main` changes, paid tools/runners, user PDFs or secrets.
