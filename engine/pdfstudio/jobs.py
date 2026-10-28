@@ -191,7 +191,7 @@ class JobJournal:
         """Metadata used to detect replacement or mutation during one open read."""
         return (
             info.st_dev, info.st_ino, info.st_mode, info.st_size,
-            info.st_mtime_ns, info.st_ctime_ns,
+            info.st_mtime_ns, info.st_ctime_ns, getattr(info, "st_nlink", 1),
         )
 
     @staticmethod
@@ -219,6 +219,11 @@ class JobJournal:
             path_before = file_path.lstat()
             if stat.S_ISLNK(path_before.st_mode) or JobJournal._is_reparse_point(path_before):
                 return False
+            # Checkpoint artifacts are immutable, single-link files. A hard-link
+            # alias could mutate bytes through another name without replacing the
+            # recorded path, so never trust an artifact while aliases exist.
+            if getattr(path_before, "st_nlink", 1) != 1:
+                return False
 
             if os.name == "posix":
                 if JobJournal._identity_from_stat(path_before) != expected_identity:
@@ -231,6 +236,8 @@ class JobJournal:
                     opened_before = os.fstat(stream.fileno())
                     if not stat.S_ISREG(opened_before.st_mode):
                         return False
+                    if getattr(opened_before, "st_nlink", 1) != 1:
+                        return False
                     if JobJournal._identity_from_stat(opened_before) != expected_identity:
                         return False
 
@@ -241,6 +248,8 @@ class JobJournal:
                     opened_after = os.fstat(stream.fileno())
                     path_after = file_path.lstat()
                     if stat.S_ISLNK(path_after.st_mode) or JobJournal._is_reparse_point(path_after):
+                        return False
+                    if getattr(opened_after, "st_nlink", 1) != 1 or getattr(path_after, "st_nlink", 1) != 1:
                         return False
                     if not stat.S_ISREG(opened_after.st_mode):
                         return False
@@ -261,6 +270,13 @@ class JobJournal:
             identity_after = JobJournal._artifact_identity(file_path)
             path_after = file_path.lstat()
             if stat.S_ISLNK(path_after.st_mode) or JobJournal._is_reparse_point(path_after):
+                return False
+            if getattr(path_after, "st_nlink", 1) != 1:
+                return False
+            # Compare path metadata to itself across the read. Unlike comparing
+            # Windows path stat to handle fstat, both snapshots use lstat on the
+            # same directory entry and can detect link-count/metadata changes.
+            if JobJournal._artifact_stat_fingerprint(path_before) != JobJournal._artifact_stat_fingerprint(path_after):
                 return False
             return (
                 identity_before == identity_after == expected_identity
@@ -473,8 +489,18 @@ class JobJournal:
             raise JobSafetyError("artifact must be a file")
         if file == self.database.resolve():
             raise JobSafetyError("journal database cannot be a checkpoint artifact")
+        artifact_stat_before = file.stat()
+        if getattr(artifact_stat_before, "st_nlink", 1) != 1:
+            raise JobSafetyError("checkpoint artifact must not have hard-link aliases")
         digest = sha256_file(file)
-        artifact_identity = self._artifact_identity(file)
+        artifact_stat_after = file.stat()
+        if (
+            getattr(artifact_stat_after, "st_nlink", 1) != 1
+            or self._artifact_stat_fingerprint(artifact_stat_before)
+            != self._artifact_stat_fingerprint(artifact_stat_after)
+        ):
+            raise JobSafetyError("checkpoint artifact changed during verification")
+        artifact_identity = self._identity_from_stat(artifact_stat_after)
         with self._open() as db:
             db.execute("BEGIN IMMEDIATE")
             current = db.execute("SELECT state FROM jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -489,12 +515,19 @@ class JobJournal:
                 self._assert_source_fingerprint(job["source"], source_fingerprint)
             if sha256_file(file) != digest:
                 raise JobSafetyError("checkpoint artifact changed during verification")
+            artifact_stat_final = file.stat()
+            if getattr(artifact_stat_final, "st_nlink", 1) != 1:
+                raise JobSafetyError("checkpoint artifact must not have hard-link aliases")
+            if (
+                self._artifact_stat_fingerprint(artifact_stat_after)
+                != self._artifact_stat_fingerprint(artifact_stat_final)
+                or self._identity_from_stat(artifact_stat_final) != artifact_identity
+            ):
+                raise JobSafetyError("checkpoint artifact identity changed during verification")
 
             # A checkpoint is an immutable page/stage artifact, not a shared
             # scratch filename. Reusing one path for another key (or job) lets
             # a later page overwrite bytes already trusted by an earlier one.
-            if self._artifact_identity(file) != artifact_identity:
-                raise JobSafetyError("checkpoint artifact identity changed during verification")
             reused = db.execute(
                 """SELECT c.job_id, c.page_index, c.stage
                 FROM checkpoints AS c
