@@ -148,6 +148,22 @@ class IsolatedPageToolTests(unittest.TestCase):
         with self.assertRaisesRegex(PageToolError, "identity changed"):
             _verify_staging_file(staged, identity, 2 * 1024 * 1024)
 
+    def test_staging_validation_rejects_hard_link_alias(self):
+        staged = self.root / "result.pdf"
+        identity = _reserve_staging_file(staged, 1024 * 1024)
+        with staged.open("r+b") as stream:
+            stream.write(b"%PDF-1.7\\n")
+        alias = self.root / "external-stage-alias.bin"
+        try:
+            os.link(staged, alias)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"hard-link creation unavailable on this host: {exc}")
+
+        self.assertEqual(staged.stat().st_nlink, 2)
+        with self.assertRaisesRegex(PageToolError, "hard-link aliases"):
+            _verify_staging_file(staged, identity, 2 * 1024 * 1024)
+        self.assertTrue(alias.is_file())
+
     def test_staging_validation_rejects_non_pdf_header(self):
         staged = self.root / "result.pdf"
         identity = _reserve_staging_file(staged, 1024 * 1024)
@@ -236,6 +252,23 @@ class IsolatedPageToolTests(unittest.TestCase):
         self.assertEqual(observed, [True])
         self.assertTrue(self.out.is_file())
         self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
+    def test_publication_rejects_hard_link_alias_created_during_link(self):
+        real_link = os.link
+        alias = self.root / "external-stage-alias.bin"
+
+        def add_alias_then_publish(staged, destination):
+            real_link(staged, alias)
+            return real_link(staged, destination)
+
+        with mock.patch("pdfstudio.page_isolation.os.link", side_effect=add_alias_then_publish):
+            with self.assertRaisesRegex(PageToolError, "hard-link count|hard-link aliases"):
+                extract_pages(self.a, self.out, "1")
+
+        self.assertFalse(self.out.exists())
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+        # Cleanup must not delete a path outside the private staging directory.
+        self.assertTrue(alias.is_file())
 
     def test_failed_parent_publication_leaves_no_output_or_staging(self):
         with mock.patch("pdfstudio.page_isolation.os.link",
