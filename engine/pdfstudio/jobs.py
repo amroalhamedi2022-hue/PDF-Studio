@@ -421,10 +421,17 @@ class JobJournal:
         self._verified_source_fingerprint(job_id)
 
     @staticmethod
-    def _check_worker_token(db: sqlite3.Connection, job_id: str, token: str | None) -> None:
+    def _check_worker_token(
+        db: sqlite3.Connection, job_id: str, token: str | None, *, require_owner: bool = False
+    ) -> None:
         owner = db.execute("SELECT token FROM worker_owners WHERE job_id=?", (job_id,)).fetchone()
-        if (owner is not None and (owner["token"] is None or owner["token"] != token)) \
-                or (owner is None and token is not None):
+        if owner is None:
+            if token is not None:
+                raise JobSafetyError("worker ownership token is absent or stale")
+            if require_owner:
+                raise JobSafetyError("active worker ownership is required")
+            return
+        if owner["token"] is None or owner["token"] != token:
             raise JobSafetyError("worker ownership token is absent or stale")
 
     def set_state(self, job_id: str, next_state: str, *, worker_token: str | None = None) -> None:
@@ -436,7 +443,10 @@ class JobJournal:
             current = db.execute("SELECT state FROM jobs WHERE job_id=?", (job_id,)).fetchone()
             if current is None:
                 raise KeyError(job_id)
-            self._check_worker_token(db, job_id, worker_token)
+            self._check_worker_token(
+                db, job_id, worker_token,
+                require_owner=(current["state"] == "running" or next_state == "running"),
+            )
             if next_state not in TRANSITIONS[current["state"]]:
                 raise JobSafetyError(f"invalid transition: {current['state']} -> {next_state}")
             self.verify_source(job_id)
@@ -531,7 +541,7 @@ class JobJournal:
             current = db.execute("SELECT state FROM jobs WHERE job_id=?", (job_id,)).fetchone()
             if current is None:
                 raise KeyError(job_id)
-            self._check_worker_token(db, job_id, worker_token)
+            self._check_worker_token(db, job_id, worker_token, require_owner=True)
             if current["state"] != "running":
                 raise JobSafetyError("cannot write checkpoints outside a running job")
             if source_fingerprint is None:

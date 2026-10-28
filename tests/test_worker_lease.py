@@ -96,10 +96,31 @@ class WorkerLeaseTests(unittest.TestCase):
         self.assertEqual(self.journal.get_job(self.job)["state"], "paused")
 
     def test_legacy_running_job_cannot_claim_without_owner_history(self):
-        self.journal.set_state(self.job, "running")
+        # Simulate a row persisted by a pre-lease version. The public API must
+        # not create this unsafe state, but recovery must still reject old rows.
+        with self.journal._open() as db:
+            db.execute("UPDATE jobs SET state='running' WHERE job_id=?", (self.job,))
         with self.assertRaises(JobSafetyError):
             with self.journal.worker_session(self.job):
                 pass
+
+    def test_unowned_jobs_cannot_start_or_mutate_running_state(self):
+        with self.assertRaisesRegex(JobSafetyError, "active worker ownership"):
+            self.journal.set_state(self.job, "running")
+        self.assertEqual(self.journal.get_job(self.job)["state"], "pending")
+
+        # Simulate an old SQLite row with no worker_owners entry. Both state
+        # mutation and checkpoint publication must fail closed.
+        with self.journal._open() as db:
+            db.execute("UPDATE jobs SET state='running' WHERE job_id=?", (self.job,))
+        page = self.root / "unowned-page.txt"
+        page.write_text("unowned artifact", encoding="utf-8")
+        with self.assertRaisesRegex(JobSafetyError, "active worker ownership"):
+            self.journal.set_state(self.job, "paused")
+        with self.assertRaisesRegex(JobSafetyError, "active worker ownership"):
+            self.journal.checkpoint(self.job, 0, "ocr", page)
+        self.assertEqual(self.journal.get_job(self.job)["state"], "running")
+        self.assertEqual(self.journal.recovery_snapshot(self.job, "ocr")["valid_pages"], ())
 
     def test_source_mutation_and_existing_output_refuse_resume(self):
         with self.journal.worker_session(self.job):
