@@ -152,7 +152,8 @@ def _save_page_text(directory: Path, page: int, text: str) -> Path:
              | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
     fd = os.open(final, flags, 0o600)
     expected_identity: tuple[int, int] | None = None
-    expected_fingerprint: tuple[int, ...] | None = None
+    path_identity: tuple[int, int] | None = None
+    path_fingerprint: tuple[int, ...] | None = None
     published = False
 
     def fingerprint(info) -> tuple[int, ...]:
@@ -161,22 +162,29 @@ def _save_page_text(directory: Path, page: int, text: str) -> Path:
             info.st_ctime_ns, getattr(info, "st_nlink", 1),
         )
 
-    def is_our_unchanged_regular_file(info) -> bool:
-        if (not stat.S_ISREG(info.st_mode)
-                or JobJournal._is_reparse_point(info)
-                or getattr(info, "st_nlink", 1) != 1
-                or expected_identity is None
-                or (info.st_dev, info.st_ino) != expected_identity):
-            return False
-        return expected_fingerprint is None or fingerprint(info) == expected_fingerprint
+    def regular_unique_entry(info) -> bool:
+        return (
+            stat.S_ISREG(info.st_mode)
+            and not JobJournal._is_reparse_point(info)
+            and getattr(info, "st_nlink", 1) == 1
+        )
 
     try:
         opened = os.fstat(fd)
-        if (not stat.S_ISREG(opened.st_mode)
-                or JobJournal._is_reparse_point(opened)
-                or getattr(opened, "st_nlink", 1) != 1):
+        if not regular_unique_entry(opened):
             raise JobSafetyError("native-text artifact handle is not a unique regular file")
         expected_identity = (opened.st_dev, opened.st_ino)
+
+        # Windows fstat/stat file-identity fields are not consistently
+        # comparable across handles on every supported filesystem. Pin the
+        # path's own identity there and compare it across publication; POSIX
+        # additionally requires the pathname to match the opened descriptor.
+        initial_path = final.lstat()
+        if not regular_unique_entry(initial_path) or initial_path.st_size != 0:
+            raise JobSafetyError("native-text artifact path changed during reservation")
+        path_identity = (initial_path.st_dev, initial_path.st_ino)
+        if os.name != "nt" and path_identity != expected_identity:
+            raise JobSafetyError("native-text artifact path does not match its opened handle")
 
         with os.fdopen(fd, "wb") as stream:
             fd = -1
@@ -184,39 +192,44 @@ def _save_page_text(directory: Path, page: int, text: str) -> Path:
             stream.flush()
             os.fsync(stream.fileno())
             written = os.fstat(stream.fileno())
-            if (not stat.S_ISREG(written.st_mode)
-                    or JobJournal._is_reparse_point(written)
-                    or getattr(written, "st_nlink", 1) != 1
+            if (not regular_unique_entry(written)
                     or (written.st_dev, written.st_ino) != expected_identity
                     or written.st_size != len(payload)):
                 raise JobSafetyError("native-text artifact changed while writing")
-            expected_fingerprint = fingerprint(written)
 
         current = final.lstat()
-        if not is_our_unchanged_regular_file(current):
+        if (not regular_unique_entry(current)
+                or (current.st_dev, current.st_ino) != path_identity
+                or current.st_size != len(payload)
+                or (os.name != "nt" and path_identity != expected_identity)):
             raise JobSafetyError("native-text artifact path changed before publication")
+        path_fingerprint = fingerprint(current)
+
         _fsync_directory(directory)
         # Recheck after directory durability work. Never return a path that now
         # names a different file, symlink, reparse point, or hard-link alias.
         current = final.lstat()
-        if not is_our_unchanged_regular_file(current):
+        if (not regular_unique_entry(current)
+                or (current.st_dev, current.st_ino) != path_identity
+                or fingerprint(current) != path_fingerprint):
             raise JobSafetyError("native-text artifact path changed during publication")
         published = True
         return final
     finally:
         if fd >= 0:
             os.close(fd)
-        if not published and expected_identity is not None:
+        if not published and path_identity is not None:
             try:
                 current = final.lstat()
-                if is_our_unchanged_regular_file(current):
+                if (regular_unique_entry(current)
+                        and (current.st_dev, current.st_ino) == path_identity
+                        and (path_fingerprint is None
+                             or fingerprint(current) == path_fingerprint)):
                     final.unlink()
                     _fsync_directory(directory)
             except OSError:
                 # Preserve any entry that cannot be proven to be ours.
                 pass
-
-
 
 def _count_utf8_characters(path: Path, limit: int) -> int:
     """Count UTF-8 characters in bounded chunks, stopping once limit is exceeded.
