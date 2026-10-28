@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -82,6 +83,24 @@ class InspectionTests(unittest.TestCase):
         original = self.path.read_bytes()
         with self.assertRaises(DocumentInspectionError):
             inspect_pdf(self.path, timeout_seconds=0.000001)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    @unittest.skipUnless(os.name in ("posix", "nt"), "OS worker limits required")
+    def test_timeout_includes_worker_process_startup(self):
+        # A slow process.start() must consume the same wall-clock budget as
+        # parsing; the old implementation started its deadline only afterward.
+        self.write_pdf(with_text=True)
+        original = self.path.read_bytes()
+        import multiprocessing.context as mp_context
+        real_start = mp_context.SpawnProcess.start
+
+        def delayed_start(process):
+            time.sleep(0.05)
+            return real_start(process)
+
+        with patch("multiprocessing.context.SpawnProcess.start", new=delayed_start):
+            with self.assertRaisesRegex(DocumentInspectionError, "timed out"):
+                inspect_pdf(self.path, timeout_seconds=0.01)
         self.assertEqual(self.path.read_bytes(), original)
 
     @unittest.skipUnless(os.name == 'nt', 'Windows Job Object required')
