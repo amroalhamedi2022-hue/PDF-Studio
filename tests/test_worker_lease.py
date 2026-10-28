@@ -115,6 +115,27 @@ class WorkerLeaseTests(unittest.TestCase):
                 pass
 
 
+    def test_checkpoint_verification_rejects_symlink_to_same_inode(self):
+        page = self.root / "page.txt"
+        alias = self.root / "page-hardlink.txt"
+        page.write_text("immutable checkpoint", encoding="utf-8")
+        with self.journal.worker_session(self.job) as owner:
+            owner.checkpoint(0, "ocr", page)
+
+        try:
+            os.link(page, alias)
+        except OSError as exc:
+            self.skipTest("hard-link creation is unavailable on this host: %s" % exc)
+        page.unlink()
+        self._symlink_or_skip(page, alias)
+
+        # The symlink resolves to the exact same inode and bytes. It must still
+        # be rejected because the recorded artifact path is no longer a regular
+        # file entry, rather than being silently trusted via stat()/open().
+        snapshot = self.journal.recovery_snapshot(self.job, "ocr")
+        self.assertEqual(snapshot["valid_pages"], ())
+        self.assertEqual(snapshot["invalid_pages"], (0,))
+
     def _symlink_or_skip(self, link: Path, target: Path) -> None:
         try:
             link.symlink_to(target)
