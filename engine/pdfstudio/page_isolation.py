@@ -15,28 +15,14 @@ import tempfile
 import time
 from pathlib import Path
 
-from .jobs import sha256_file
+from .jobs import sha256_file, sha256_file_before_deadline
 from .windows_job import WindowsJob, WindowsJobError
 
 
 def _sha256_file_before_deadline(path: str | Path, deadline: float,
                                  chunk_bytes: int = 1024 * 1024) -> str:
-    """Hash a source in bounded chunks while honoring the operation wall deadline."""
-    if chunk_bytes < 1:
-        raise ValueError("chunk_bytes must be positive")
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        while True:
-            if time.monotonic() >= deadline:
-                raise TimeoutError("PDF operation deadline exceeded during source hashing")
-            block = stream.read(chunk_bytes)
-            if not block:
-                break
-            digest.update(block)
-    if time.monotonic() >= deadline:
-        raise TimeoutError("PDF operation deadline exceeded during source hashing")
-    return digest.hexdigest()
-
+    """Compatibility wrapper for the shared deadline-aware file hash."""
+    return sha256_file_before_deadline(path, deadline, chunk_bytes)
 
 def _require_deadline(deadline: float) -> None:
     if time.monotonic() >= deadline:
