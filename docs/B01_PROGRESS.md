@@ -886,3 +886,16 @@ The same exact CI run also passed the 5000-page native-text/checkpoint crash-res
 - **Build decision:** no APK/EXE build; these Python filesystem and staging contracts are directly exercised by cross-platform source tests, and packaging would not answer a stronger question.
 - **Google Drive Handoff:** **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The specified `PDF Studio — HANDOFF` document was not updated; no sync success is claimed.
 - No merge, auto-merge, `main` edits, paid APIs/runners, user PDFs or secrets.
+
+
+## B01 continuation — parent-side staging hard-link count (2026-10-28)
+
+**Same active milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity`; keep B01 OPEN / PARTIAL and B02 closed.
+
+**Production defect/fix:** parent-side `page_isolation.py` had been checking staging inode, size and PDF header but not link count. Child-side `page_tools._publish()` already rejected aliases, yet an external hard-link alias could be introduced after worker exit or during parent publication. Commit [`e01b3bb756cd16b286b14b2d1147918528781494`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/e01b3bb756cd16b286b14b2d1147918528781494) now requires one link during reservation/pre-publication and exactly two links after the staging name is atomically linked to the final destination. Both names and the opened descriptor are rechecked. Cleanup removes only a destination still referring to the expected staging inode; unrelated paths are not deleted.
+
+**Regression/CI:** added a pre-publication alias test and a race test that injects an external alias during final linking. Initial CI exposed only a stale error-message expectation in an existing race test; corrected in [`89962f06abb368ac2525c6559877bd9f6ecdac3b`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/89962f06abb368ac2525c6559877bd9f6ecdac3b). Exact code/test CI [#40686277812 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40686277812): 192 tests on Windows; 192 on Ubuntu with six platform-specific skips. Syntax, 100-page, 64 MiB disk-backed output, Linux 1000-page, and Linux 5000-page crash/resume/FTS checks passed. These are synthetic born-digital tests, not OCR or realistic >=2 GiB scans.
+
+**Build/Handoff:** no APK/EXE build was useful for this Python filesystem contract. Google Drive `PDF Studio — HANDOFF` remains **FAILED / NOT AVAILABLE** because no Docs/Drive write connector is exposed in this runtime; the document was not updated.
+
+**Still open / NOT TESTED:** Arabic/English OCR; realistic massive scanned PDFs; OS-reboot recovery; hostile-PDF OS sandbox; Android SAF/UI/device; Windows GUI/EXE/device; complete F01–F10. Resume B01 from output integrity/resource and platform gates; do not open B02 until B01 acceptance is evidenced.
