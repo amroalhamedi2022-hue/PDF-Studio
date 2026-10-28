@@ -329,6 +329,38 @@ class IsolatedPageToolTests(unittest.TestCase):
         self.assertFalse(self.out.exists())
         self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
 
+    def test_publication_preserves_unrelated_destination_if_staging_and_output_are_replaced(self):
+        real_link = os.link
+        concurrent = self.root / "concurrent-owner.pdf"
+        sentinel = b"owned by concurrent publisher"
+
+        def replace_both_paths_after_link(staged, destination):
+            staged = Path(staged)
+            destination = Path(destination)
+            try:
+                real_link(staged, destination)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"hard-link publication unavailable on this host: {exc}")
+            # Model a same-user path-replacement race after the link operation:
+            # both visible names are changed to an unrelated inode.
+            staged.unlink()
+            destination.unlink()
+            concurrent.write_bytes(sentinel)
+            try:
+                real_link(concurrent, staged)
+                real_link(concurrent, destination)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"hard-link race fixture unavailable on this host: {exc}")
+
+        with mock.patch("pdfstudio.page_isolation.os.link", side_effect=replace_both_paths_after_link):
+            with self.assertRaisesRegex(PageToolError, "published PDF identity or hard-link count changed"):
+                extract_pages(self.a, self.out, "1")
+
+        self.assertEqual(self.out.read_bytes(), sentinel)
+        self.assertEqual(concurrent.read_bytes(), sentinel)
+        self.assertEqual(list(self.root.glob(".pdfstudio-stage-*")), [])
+
+
     def test_mid_write_disk_full_cleans_partial_stage_and_preserves_source(self):
         staged = self.root / "reserved-result.pdf"
         staged.write_bytes(b"\\0" * 4096)

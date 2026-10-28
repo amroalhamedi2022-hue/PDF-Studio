@@ -222,8 +222,10 @@ def _publish_verified_staging_file(staged: Path, destination: Path,
         # os.link succeeded above, so remove the destination only while it
         # still aliases this operation's staging inode. Never unlink a
         # different racing output that replaced the caller-visible path.
-        if published_identity == expected_identity or (
-                published_identity == staging_identity and published_identity != expected_identity):
+        if published_identity == expected_identity:
+            # Remove only the exact inode created by this publication attempt.
+            # If a concurrent owner replaced the destination with a different
+            # inode, preserve it even when the staging pathname was replaced too.
             try:
                 destination.unlink()
             except OSError:
