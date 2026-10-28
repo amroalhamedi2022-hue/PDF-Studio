@@ -1,17 +1,20 @@
 # PDF Studio — Master Execution Plan v1.0
 **Date:** 2026-10-24  
-**Status:** APPROVED SCOPE / NOT IMPLEMENTED  
-**Working repository:** `amroalhamedi2022-hue/pdf-studio` (pending creation/verification by owner)  
+**Status:** APPROVED SCOPE / IMPLEMENTATION ACTIVE — B01 IN PROGRESS  
+**Working repository:** `amroalhamedi2022-hue/PDF-Studio` (public repository verified; PR #1 B00 and PR #2 B01 active)  
 **Platforms:** Android (Xiaomi Pad 5 first; phones) + Windows 11 (MSI Sword 15 first).  
 **Mission:** Offline-first end-to-end PDF viewing, OCR, large-file processing, reconstruction, editing, archival, workflow automation, and quality assurance.
 
-> Scope lock: all items in this document are required unless the owner explicitly approves a documented change. Do not claim an item done based on UI, mock data, or code presence alone. No external cloud transmission without explicit consent. No APK/EXE builds during normal development: complete source features, unit/integration tests that don't package apps, static analysis, security, and release readiness first; package final app once per platform at the end and verify it on devices.
+> Scope lock: all items in this document are required unless the owner explicitly approves a documented change. Do not claim an item done based on UI, mock data, or code presence alone. No external cloud transmission without explicit consent. **Updated build policy 2026-10-24:** do not build just to produce more artifacts, but permit APK/EXE test builds whenever a specific functional milestone, device behavior, integration, or performance question cannot be answered by source tests alone. Record the reason, exact SHA, results and follow-up; preserve a separate final release gate.
+
+
+> **2026-10-24 automation governance override (user approved):** PDF Studio is now included in the **existing scheduled AquaWord + PDF Studio development task**, not a standalone sixth task. This explicit user decision supersedes only the earlier line in Execution Principles saying “One project-specific automation only; never alter existing AquaWord automation.” The apps and code remain completely separate, with distinct GitHub repositories, branches, PRs, CI, test logs, security reviews and delivery artifacts. Both retain the same free-only, no-auto-merge, source-first, **purpose-driven APK/EXE builds permitted when needed to verify real behavior (user clarification 2026-10-24)**, final device recheck and individually verified handoff rules. Do not combine modules or reuse binaries across the two projects. Neither project's completion should block delivery of the other's verified final files. No functional F01-F10 requirements or B00-B11 gates are waived.
 
 ## 0. Execution principles (binding)
 - Search authoritative open-source alternatives *before* implementing or modifying any feature. Evaluate technical quality, maintenance, license of code + model weights, CVEs, dependencies, and Android/Windows viability; record decision as ADR. Adapt proven implementations legally; never blindly copy.
 - GitHub is authoritative: `main` protected by convention; work on `feature/*` branches and PRs, no auto-merge, no unapproved rewrite of history, no changes in other project repos, especially AquaWord.
-- One project-specific automation only; never alter existing AquaWord automation. Other repo changes prohibited.
-- Source-level CI: tests, lint, dependency/license/SBOM/security scans allowed. Disable packaging triggers on ordinary pushes. Final delivery is a separate gated build workflow (`workflow_dispatch`, `final-ready` approval) only after feature acceptance. No repeated trial APKs/EXEs.
+- Use only the existing user-approved combined AquaWord + PDF Studio automation; do not create a separate automation. Keep each app's repository, source, branches, PRs, CI, artifacts, and handoff strictly separate. Do not touch unrelated projects.
+- Source-level CI: tests, lint, dependency/license/SBOM/security scans run fast by default. Allow selectively triggered packaging for milestone integration/device validation when it answers a documented test question; do not package pointlessly on every push. Production release remains a separate gated build (`workflow_dispatch`, `final-ready` approval) only after final acceptance.
 - End of each batch: concrete changed paths, commits/PR, tests with PASS/FAIL/NOT TESTED, measured performance when applicable, known limitations, and next batch. Never claim device validation from source checks.
 - Public repo means no private scans, user files, passwords, private models/tokens, test secrets, or personal PDFs in history.
 - Prioritize safety and document integrity: never overwrite original automatically, atomic saves, recovery, hash checks, visible warnings on signatures, permissions and redaction.
@@ -36,7 +39,7 @@ pdf-studio/
   tests/                   # deterministic unit/integration and golden PDF corpus
   benchmarks/              # performance & accuracy measurements
   docs/                    # plan, acceptance, ADRs, source/reuse and licenses
-  .github/workflows/       # source-check workflow, gated FINAL build only
+  .github/workflows/       # fast source-check workflow and targeted milestone builds; separately gated FINAL release
 ```
 - Separation by interface: `Document`, `Page`, `TextSpan`, `BoundingBox`, `LayoutBlock`, `Table`, `Formula`, `Image`, `Annotation`, `EditOperation`, `Job`, `Checkpoint`, `ExportProfile`. Explicit versioned JSON/SQLite storage; source PDF hashes and per-page provenance.
 - Windows heavy OCR backend: Python OCRmyPDF/Tesseract, PaddleOCR/PP-StructureV3 or VL where feasible, Docling optional, qpdf/pikepdf/PDFBox as appropriate; local service and bounded worker pool. The UI technology is to be selected via ADR (Qt/PySide6 or comparable) after reviewing licensing/distribution.
@@ -131,7 +134,7 @@ Every batch requires implementation, relevant automated tests, evidence links, i
 | B08 Workflows & Security | F09 and F10, local LAN delegated processing, offline controls | Authorization test, no silent upload, security/license checks, reproducible jobs |
 | B09 UI and Polish | Tablet/phone/desktop layouts, themes, bilingual RTL, icon, onboarding, dialogs | UX/a11y tests, images and copy match design references |
 | B10 Independent Acceptance | Requirements coverage and full source recheck, no regressions, performance and stress, test audit | All requirements PASS or documented limitation with explicit user acceptance; sign off to package |
-| B11 Final Deliverables | *First* gated final Android APK and Windows EXE/installer packaging; real-device install/open/save/print/roundtrip checks | Signed/checksummed actual artifacts, QA log, full summary and source pointers; repair only if failed |
+| B11 Final Deliverables | Gated final Android APK and Windows EXE/installer packaging (milestone test builds may have preceded it); real-device install/open/save/print/roundtrip checks | Signed/checksummed actual artifacts, QA log, full summary and source pointers; repair only if failed |
 
 ## 5. Acceptance matrix and quantitative benchmarks
 - For each `Fxx.yy`, maintain a row in `docs/ACCEPTANCE.md` with status `TODO/IN PROGRESS/PASS/FAIL/BLOCKED/NOT TESTED`, test source path, test output or CI link, applicable platform(s), last commit and issue number.
@@ -169,9 +172,22 @@ Every batch requires implementation, relevant automated tests, evidence links, i
 - PyMuPDF licensing: https://pymupdf.io/licensing
 - Stirling PDF licensing: https://github.com/Stirling-Tools/Stirling-PDF/blob/main/LICENSE
 
-## 9. Immediate next action
-1. Owner creates PUBLIC repository `amroalhamedi2022-hue/pdf-studio` and grants the existing GitHub connector repository access if needed.
-2. Check latest state; create `feature/b00-foundation`; commit this plan without modifying any other project.
-3. Complete B00 license/architecture spike, tests/references and source-only CI; proceed batch-by-batch through gates.
+## 9. Current execution checkpoint — 2026-10-28
 
-**No source code or binary implementation has yet been created by this planning file.**
+- **Repository status:** the public repository exists and is active. PR #1 (`feature/b00-foundation`) is the B00 foundation; PR #2 (`feature/b01-pdf-core`) is open, draft and stacked on B00. Do not repeat repository creation or setup.
+- **Active milestone:** `B01 — Resource-Bounded PDF Core & Output Integrity`. B01 must remain OPEN / PARTIAL until its acceptance gates are evidenced; do not open B02 yet.
+- **Latest source/test checkpoint (2026-10-28):** [`4aafa1f6460781249b4dc8c3680872ef462ce64f`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/4aafa1f6460781249b4dc8c3680872ef462ce64f). Exact source-only CI [`#40672146337 PASS`](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40672146337), Ubuntu + Windows, 190 tests per host (Ubuntu skips six platform-specific cases).
+- **Latest integrity improvement:** checkpoint verification rejects symbolic-link/reparse-point path replacements even when they resolve to the same inode and bytes. POSIX hashes through one `O_NOFOLLOW` descriptor with before/after identity and metadata checks; Windows retains path-based hashing with pre/post reparse and identity checks for compatibility. This narrows alias substitution but is not a complete defense against every same-user Windows filesystem race.
+- **Latest no-clobber hardening:** job reservation and worker claim reject dangling output symlinks/reparse points with `lstat()`; PDF staging rejects hard-link aliases at the path, open, write and validation boundaries. Exact regression/CI evidence is recorded in `docs/ACCEPTANCE.md` and `docs/B01_PROGRESS.md`.
+- **Latest resource-budget improvement:** max_total_chars now includes valid native-text checkpoints across resume; production commit [9ceeb8bf7efd1c8220d6d9782b7a8df0b0650b51](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/9ceeb8bf7efd1c8220d6d9782b7a8df0b0650b51), regression at [6fee60e1464e421e078da6079eb29f7607fef719](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/6fee60e1464e421e078da6079eb29f7607fef719); exact-head CI [#40656572577 PASS](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40656572577).
+- **Synthetic scale evidence:** 100-page checks and 64 MiB disk-backed extraction PASS on both host OSes; Linux 1000-page and 5000-page abrupt-process resume/FTS checks PASS. These are born-digital synthetic fixtures, not OCR or realistic >=2 GiB scan acceptance.
+- **Build policy:** a purpose-driven APK/EXE test build is allowed when source tests cannot answer a specific runtime/device/integration question. No build was useful for this Python/SQLite change; final Android and Windows packaging remains a separate acceptance gate.
+- **Remaining B01 gates / NOT TESTED:** real Arabic/English OCR, realistic >=2 GiB scanned documents, OS-reboot recovery, hostile-PDF OS sandbox, Android SAF/UI/device, Windows GUI/EXE/device, and full F01–F10 acceptance.
+- **Google Drive Handoff:** the specified `PDF Studio — HANDOFF` document remains **FAILED / NOT AVAILABLE** because this runtime exposes no Google Docs/Drive write connector. The Drive document was not updated.
+- **Next:** continue B01 recovery/output-integrity and realistic-resource gates, then platform adapters; only proceed to B02 after the B01 acceptance criteria are met. No merge, auto-merge, `main` edits, paid tools/runners, user documents or secrets.
+
+
+- **2026-10-28 follow-up:** dangling output symlink reservation defect fixed at [`e822bd603c25170fdb12e9c42c9fb171dd6455b5`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/e822bd603c25170fdb12e9c42c9fb171dd6455b5), exact CI [`#40671338057 PASS`](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40671338057), 189 tests per host. Google Drive HANDOFF sync remains FAILED / NOT AVAILABLE because no Docs/Drive writer is exposed. B01 remains OPEN / PARTIAL; keep B02 closed until the remaining B01 gates are evidenced.
+
+
+- **2026-10-28 output-integrity follow-up:** final source/test SHA [`4aafa1f6460781249b4dc8c3680872ef462ce64f`](https://github.com/amroalhamedi2022-hue/PDF-Studio/commit/4aafa1f6460781249b4dc8c3680872ef462ce64f) passed [CI #40672146337](https://github.com/amroalhamedi2022-hue/PDF-Studio/actions/runs/40672146337), 190 tests per host. A first test attempt caught a missing test-only import; the corrected rerun passed. B01 remains OPEN / PARTIAL, B02 stays closed, and the specified Google Drive HANDOFF remains unsynced because no Docs/Drive write connector is available.

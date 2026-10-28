@@ -14,19 +14,52 @@ concurrency:
 
 jobs:
   python-core:
-    name: Python source tests, no binaries
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    name: Python source tests (${{ matrix.os }}), no binaries
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install pinned source-only PDF parser
+        run: python -m pip install --disable-pip-version-check -r requirements-core.txt
       - name: Check Python syntax
         run: python -m compileall -q engine tests
-      - name: Run isolated source-only tests
+      - name: Run complete POSIX source suite
+        if: runner.os != 'Windows'
+        env:
+          PYTHONPATH: engine
+        run: python -m unittest discover -s tests -v
+      - name: Run complete Windows source suite (Job Object + inspection + FTS + page tools)
+        if: runner.os == 'Windows'
         env:
           PYTHONPATH: engine
         run: python -m unittest discover -s tests -v
 
+
+      - name: Synthetic native-PDF scale smoke (100 pages; measured)
+        env:
+          PYTHONPATH: engine
+        run: python benchmarks/synthetic_pdf_bench.py --pages 100 --chars-per-page 256
+
+      - name: Disk-backed PDF output reservation smoke (64 MiB)
+        env:
+          PYTHONPATH: engine
+        run: python benchmarks/disk_space_preflight_bench.py --size-mib 64 --timeout-seconds 180
+      - name: Synthetic native-PDF scale (1000 pages; Linux only)
+        if: runner.os != 'Windows'
+        env:
+          PYTHONPATH: engine
+        run: python benchmarks/synthetic_pdf_bench.py --pages 1000 --chars-per-page 256
+
+      - name: Synthetic 5000-page checkpoint, resume and FTS integration (Linux only)
+        if: runner.os != 'Windows'
+        env:
+          PYTHONPATH: engine
+        run: python benchmarks/synthetic_pdf_bench.py --pages 5000 --chars-per-page 256 --timeout-seconds 300 --checkpoint-resume
